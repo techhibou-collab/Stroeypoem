@@ -178,6 +178,18 @@ BEGIN
     );
 END;
 
+IF OBJECT_ID('dbo.site_settings', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.site_settings (
+        id INT NOT NULL CONSTRAINT PK_site_settings PRIMARY KEY,
+        payment_qr_image_url NVARCHAR(MAX) NULL,
+        payment_upi_id NVARCHAR(255) NULL,
+        updated_at DATETIME2 NOT NULL CONSTRAINT DF_site_settings_updated DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT CK_site_settings_singleton CHECK (id = 1)
+    );
+    INSERT INTO dbo.site_settings (id) VALUES (1);
+END;
+
 IF NOT EXISTS (SELECT 1 FROM dbo.poems WHERE title = 'The Midnight Shadow')
 BEGIN
     INSERT INTO dbo.poems (title, description, price, free_pages, cover_image_url)

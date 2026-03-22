@@ -7,7 +7,7 @@ services:
       MSSQL_PID: "Express"
       MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
     ports:
-      - "1433:1433"
+      - "1434:1433"
     volumes:
       - sqlserver_data:/var/opt/mssql
 
@@ -32,11 +32,11 @@ services:
         echo 'sqlcmd not found in mssql-tools image';
         exit 1;
       fi;
-      until \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -No -C -Q \"SELECT 1\" >/dev/null 2>&1; do
+      until \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\" >/dev/null 2>&1; do
         sleep 2;
       done;
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -No -C -Q \"IF DB_ID('poems_db') IS NULL CREATE DATABASE poems_db;\";
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poems_db -No -C -i /init.sql
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"IF DB_ID('poems_db') IS NULL CREATE DATABASE poems_db;\";
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poems_db -C -i /init.sql
       "
     restart: "no"
 

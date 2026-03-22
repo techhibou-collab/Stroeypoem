@@ -2,9 +2,10 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import UserSessionActions from '@/components/user-session-actions';
 import { ApiError, fetchApiJson, type Poem, type PoemPage, type PoemReadResponse } from '@/lib/api';
+import { stopAllPoemAudio } from '@/lib/audio';
 import { clearUserSession, getUserAuthHeaders, getUserToken } from '@/lib/user-auth';
 
 type PoemReaderPageProps = {
@@ -36,6 +37,8 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
   const [isLoading, setIsLoading] = useState(true);
   const [isCheckingUser, setIsCheckingUser] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
+  const [musicPlayBlocked, setMusicPlayBlocked] = useState(false);
+  const backgroundMusicRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     const token = getUserToken();
@@ -126,6 +129,40 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
     };
   }, [isCheckingUser, poemId, poemTitle, redirectPath, router]);
 
+  useEffect(() => {
+    const el = backgroundMusicRef.current;
+    const url = poem?.music_file_url;
+
+    if (!el || !url || !isPurchased) {
+      setMusicPlayBlocked(false);
+      return;
+    }
+
+    el.loop = true;
+    el.volume = 0.85;
+
+    const tryPlay = () => {
+      void el.play().catch(() => {
+        setMusicPlayBlocked(true);
+      });
+    };
+
+    setMusicPlayBlocked(false);
+    tryPlay();
+
+    return () => {
+      el.pause();
+      el.currentTime = 0;
+      try {
+        el.removeAttribute('src');
+        el.load();
+      } catch {
+        // ignore
+      }
+      setMusicPlayBlocked(false);
+    };
+  }, [poem?.id, poem?.music_file_url, isPurchased]);
+
   const pageTheme = {
     bg: 'bg-[#f4eee6]',
     text: 'text-[#6b563b]',
@@ -150,10 +187,40 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
     }
   };
 
+  const musicUrl = poem?.music_file_url && isPurchased ? poem.music_file_url : null;
+
+  const handlePlayMusicClick = () => {
+    const el = backgroundMusicRef.current;
+    if (!el) {
+      return;
+    }
+
+    void el.play().then(() => setMusicPlayBlocked(false)).catch(() => {
+      setMusicPlayBlocked(true);
+    });
+  };
+
+  const handleProceedToPayment = () => {
+    stopAllPoemAudio();
+  };
+
   return (
     <div
       className={`min-h-screen ${pageTheme.bg} ${pageTheme.text} flex flex-col overflow-hidden font-serif selection:bg-[#d8cbb8]/50`}
     >
+      {musicUrl ? (
+        <audio
+          ref={backgroundMusicRef}
+          src={musicUrl}
+          loop
+          playsInline
+          preload="auto"
+          className="pointer-events-none fixed h-0 w-0 overflow-hidden opacity-0"
+          aria-hidden
+          data-poem-background="true"
+        />
+      ) : null}
+
       <div className="fixed inset-4 z-0 hidden border-2 border-[#d8cbb8] pointer-events-none sm:inset-6 sm:block">
         <div className="absolute inset-1 border border-[#d8cbb8]"></div>
       </div>
@@ -175,6 +242,15 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
             >
               {poem?.music_file_url && isPurchased ? 'Music Ready' : 'Music Locked'}
             </span>
+            {musicPlayBlocked && musicUrl ? (
+              <button
+                type="button"
+                onClick={handlePlayMusicClick}
+                className="rounded-full border border-[#8a7251] bg-[#fdfcfb] px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[#6b5846] shadow-sm transition-colors hover:bg-[#e5ddd3]"
+              >
+                Play music
+              </button>
+            ) : null}
             <UserSessionActions showLogin={false} />
           </div>
         </div>
@@ -292,6 +368,7 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
 
               <Link
                 href={`/payments/${poem.id}`}
+                onClick={handleProceedToPayment}
                 className={`inline-flex w-full items-center justify-center gap-2 rounded-xl px-8 py-4 text-lg font-bold transition-transform hover:shadow-lg active:scale-95 ${pageTheme.accent} shadow-md`}
               >
                 Proceed to Payment

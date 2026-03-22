@@ -94,6 +94,11 @@ export type PoemReadResponse = {
   hasMorePages: boolean;
 };
 
+export type PaymentDisplay = {
+  qr_image_url: string | null;
+  upi_id: string | null;
+};
+
 export type PaymentSubmission = {
   id: number;
   poem_id: number;

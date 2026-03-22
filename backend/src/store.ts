@@ -25,6 +25,7 @@ export type StoredPoemPage = {
 export type StoredPayment = {
   id: number;
   poem_id: number;
+  user_id?: number | null;
   user_name: string;
   upi_ref_id: string;
   screenshot_url: string | null;
@@ -41,6 +42,11 @@ export type StoredUser = {
   created_at: string;
 };
 
+export type PaymentDisplaySettings = {
+  qr_image_url: string | null;
+  upi_id: string | null;
+};
+
 type LocalStoreData = {
   nextUserId: number;
   nextPoemId: number;
@@ -50,6 +56,7 @@ type LocalStoreData = {
   poems: StoredPoem[];
   poemPages: StoredPoemPage[];
   payments: StoredPayment[];
+  paymentDisplay?: PaymentDisplaySettings;
 };
 
 type CreatePoemInput = {
@@ -57,6 +64,7 @@ type CreatePoemInput = {
   description: string;
   coverImageUrl: string | null;
   musicFileUrl: string | null;
+  pdfFileUrl?: string | null;
   price: number;
   freePages: number;
   poemContent: string;
@@ -72,6 +80,7 @@ type UpdatePoemInput = {
 
 type CreatePaymentInput = {
   poemId: number;
+  userId: number;
   userName: string;
   upiRefId: string;
   screenshotUrl: string | null;
@@ -101,6 +110,7 @@ const createEmptyStore = (): LocalStoreData => ({
   poems: [],
   poemPages: [],
   payments: [],
+  paymentDisplay: { qr_image_url: null, upi_id: null },
 });
 
 const parsePoemPages = (poemContent: string) =>
@@ -134,6 +144,7 @@ const readStore = async (): Promise<LocalStoreData> => {
       poems: parsed.poems ?? [],
       poemPages: parsed.poemPages ?? [],
       payments: parsed.payments ?? [],
+      paymentDisplay: parsed.paymentDisplay ?? { qr_image_url: null, upi_id: null },
     };
   } catch {
     const emptyStore = createEmptyStore();
@@ -205,6 +216,7 @@ export const createLocalPoem = async ({
   description,
   coverImageUrl,
   musicFileUrl,
+  pdfFileUrl,
   price,
   freePages,
   poemContent,
@@ -222,7 +234,7 @@ export const createLocalPoem = async ({
     title,
     description: description || '',
     cover_image_url: coverImageUrl,
-    pdf_file_url: null,
+    pdf_file_url: pdfFileUrl ?? null,
     music_file_url: musicFileUrl,
     price,
     free_pages: freePages,
@@ -304,7 +316,7 @@ export const deleteLocalPoem = async (poemId: number) => {
   };
 };
 
-export const readLocalPoemPages = async (poemId: number, isPurchased: boolean) => {
+export const readLocalPoemPagesAdmin = async (poemId: number) => {
   const store = await readStore();
   const poem = store.poems.find((entry) => entry.id === poemId);
 
@@ -316,16 +328,36 @@ export const readLocalPoemPages = async (poemId: number, isPurchased: boolean) =
     .filter((page) => page.poem_id === poemId)
     .sort((left, right) => left.page_number - right.page_number);
 
+  return { pages: sortedPages };
+};
+
+export const readLocalPoemPages = async (poemId: number, userId: number) => {
+  const store = await readStore();
+  const poem = store.poems.find((entry) => entry.id === poemId);
+
+  if (!poem) {
+    return null;
+  }
+
+  const isPurchased = store.payments.some(
+    (p) => p.poem_id === poemId && p.user_id === userId && p.status === 'verified',
+  );
+
+  const sortedPages = [...store.poemPages]
+    .filter((page) => page.poem_id === poemId)
+    .sort((left, right) => left.page_number - right.page_number);
+
   const pages = isPurchased ? sortedPages : sortedPages.slice(0, poem.free_pages);
 
   return {
     freePages: poem.free_pages,
     pages,
     hasMorePages: sortedPages.length > pages.length,
+    isPurchased,
   };
 };
 
-export const createLocalPayment = async ({ poemId, userName, upiRefId, screenshotUrl }: CreatePaymentInput) => {
+export const createLocalPayment = async ({ poemId, userId, userName, upiRefId, screenshotUrl }: CreatePaymentInput) => {
   const store = await readStore();
   const poem = store.poems.find((entry) => entry.id === poemId);
 
@@ -336,6 +368,7 @@ export const createLocalPayment = async ({ poemId, userName, upiRefId, screensho
   const payment: StoredPayment = {
     id: store.nextPaymentId,
     poem_id: poemId,
+    user_id: userId,
     user_name: userName,
     upi_ref_id: upiRefId,
     screenshot_url: screenshotUrl,
@@ -385,4 +418,25 @@ export const updateLocalPaymentStatus = async ({ paymentId, status }: UpdatePaym
     ...payment,
     poem_title: store.poems.find((poem) => poem.id === payment.poem_id)?.title ?? 'Unknown poem',
   };
+};
+
+export const getLocalPaymentDisplay = async (): Promise<PaymentDisplaySettings> => {
+  const store = await readStore();
+  return store.paymentDisplay ?? { qr_image_url: null, upi_id: null };
+};
+
+type UpdatePaymentDisplayInput = {
+  qr_image_url?: string | null;
+  upi_id?: string | null;
+};
+
+export const updateLocalPaymentDisplay = async (input: UpdatePaymentDisplayInput): Promise<PaymentDisplaySettings> => {
+  const store = await readStore();
+  const current = store.paymentDisplay ?? { qr_image_url: null, upi_id: null };
+  store.paymentDisplay = {
+    qr_image_url: input.qr_image_url !== undefined ? input.qr_image_url : current.qr_image_url,
+    upi_id: input.upi_id !== undefined ? input.upi_id : current.upi_id,
+  };
+  await writeStore(store);
+  return store.paymentDisplay;
 };

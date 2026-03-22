@@ -1,23 +1,51 @@
 'use client';
 
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import UserSessionActions from '@/components/user-session-actions';
-import { fetchApiJson, getApiUrl, type Poem } from '@/lib/api';
+import { fetchApiJson, getApiUrl, type PaymentDisplay, type Poem } from '@/lib/api';
+import { stopAllPoemAudio } from '@/lib/audio';
+import { clearUserSession, getStoredUser, getUserAuthHeaders, getUserToken } from '@/lib/user-auth';
 
 export default function PaymentPage() {
+  const router = useRouter();
+  const pathname = usePathname();
   const params = useParams<{ id: string }>();
   const poemId = Array.isArray(params?.id) ? params.id[0] : params?.id;
   const [poem, setPoem] = useState<Poem | null>(null);
+  const [paymentDisplay, setPaymentDisplay] = useState<PaymentDisplay | null>(null);
   const [userName, setUserName] = useState('');
   const [upiRefId, setUpiRefId] = useState('');
   const [selectedScreenshot, setSelectedScreenshot] = useState<File | null>(null);
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [message, setMessage] = useState('');
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+
+  useEffect(() => {
+    stopAllPoemAudio();
+  }, []);
+
+  useEffect(() => {
+    if (!getUserToken()) {
+      router.replace(`/login?redirect=${encodeURIComponent(pathname || '/payments')}`);
+      return;
+    }
+
+    const stored = getStoredUser();
+    if (stored?.name) {
+      setUserName(stored.name);
+    }
+
+    setIsCheckingAuth(false);
+  }, [pathname, router]);
 
   useEffect(() => {
     const loadPoem = async () => {
+      if (isCheckingAuth) {
+        return;
+      }
+
       if (!poemId) {
         setStatus('error');
         setMessage('Invalid poem selected.');
@@ -25,8 +53,13 @@ export default function PaymentPage() {
       }
 
       try {
-        const poemData = await fetchApiJson<Poem>(`/api/poems/${encodeURIComponent(poemId)}`);
+        const [poemData, display] = await Promise.all([
+          fetchApiJson<Poem>(`/api/poems/${encodeURIComponent(poemId)}`),
+          fetchApiJson<PaymentDisplay>('/api/payment-display')
+            .catch(() => ({ qr_image_url: null, upi_id: null })),
+        ]);
         setPoem(poemData);
+        setPaymentDisplay(display);
       } catch (error) {
         setStatus('error');
         setMessage(error instanceof Error ? error.message : 'Unable to load poem details.');
@@ -34,7 +67,7 @@ export default function PaymentPage() {
     };
 
     void loadPoem();
-  }, [poemId]);
+  }, [poemId, isCheckingAuth]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -59,10 +92,17 @@ export default function PaymentPage() {
     try {
       const response = await fetch(getApiUrl('/api/payments'), {
         method: 'POST',
+        headers: getUserAuthHeaders(),
         body: payload,
       });
 
       const data = await response.json();
+
+      if (response.status === 401) {
+        clearUserSession();
+        router.replace(`/login?redirect=${encodeURIComponent(pathname || '/payments')}`);
+        return;
+      }
 
       if (!response.ok) {
         throw new Error(data.error || 'Unable to submit payment');
@@ -77,6 +117,14 @@ export default function PaymentPage() {
       setMessage(error instanceof Error ? error.message : 'Unable to submit payment');
     }
   };
+
+  if (isCheckingAuth) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-[radial-gradient(circle_at_top,_#fffcf8,_#f7f3ec_70%)] font-serif text-[#6b5846]">
+        <p className="text-sm font-medium uppercase tracking-widest">Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_top,_#fffcf8,_#f7f3ec_70%)] px-4 py-4 font-serif text-[#4a3f35] selection:bg-[#8a735c]/30 sm:px-6">
@@ -127,16 +175,27 @@ export default function PaymentPage() {
                 <span className="mb-1 text-4xl text-[#5a4838] sm:text-5xl">Rs {Number(poem?.price || 0)}</span>
                 {poem && <span className="mb-4 text-center text-sm font-semibold text-[#8a735c]">{poem.title}</span>}
 
-                <div className="mb-4 flex h-36 w-36 items-center justify-center rounded-xl border border-[#e8dfd5] bg-white p-2 shadow-inner sm:h-40 sm:w-40">
-                  <div className="flex h-full w-full items-center justify-center rounded-lg border-4 border-dashed border-[#8a735c]/50 transition-colors hover:border-[#8a735c]">
-                    <span className="font-sans text-xs font-bold uppercase tracking-[0.25em] text-[#6b5846]/70">QR CODE</span>
-                  </div>
+                <div className="mb-4 flex h-36 w-36 items-center justify-center overflow-hidden rounded-xl border border-[#e8dfd5] bg-white p-2 shadow-inner sm:h-40 sm:w-40">
+                  {paymentDisplay?.qr_image_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={paymentDisplay.qr_image_url}
+                      alt="Scan to pay with UPI"
+                      className="h-full w-full object-contain"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center rounded-lg border-4 border-dashed border-[#8a735c]/50 transition-colors hover:border-[#8a735c]">
+                      <span className="px-1 text-center font-sans text-[10px] font-bold uppercase leading-tight tracking-[0.2em] text-[#6b5846]/70">
+                        QR not set by admin
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex w-full flex-col items-center font-sans">
                   <span className="mb-2 text-[11px] font-bold uppercase tracking-[0.24em] text-[#8a735c]">UPI ID</span>
                   <span className="w-full rounded-lg border border-[#e8dfd5] bg-[#f7f3ec] px-4 py-2 text-center font-mono text-sm font-bold tracking-tight text-[#6b563b] shadow-sm">
-                    poetryhub@upi
+                    {paymentDisplay?.upi_id?.trim() || 'poetryhub@upi'}
                   </span>
                 </div>
               </div>

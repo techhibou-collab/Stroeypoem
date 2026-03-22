@@ -6,17 +6,21 @@ import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
 import { allowLocalFallback, getLastConnectionError, getPool, shouldSkipDatabaseAttempt, sql } from './db';
+import { extractTextPagesFromPdfBuffer } from './pdf-pages';
 import {
   createLocalUser,
   createLocalPoem,
   createLocalPayment,
   deleteLocalPoem,
   getLocalPoemById,
+  getLocalPaymentDisplay,
   getLocalPoemByTitle,
   getLocalUserByEmail,
   listLocalPayments,
   listLocalPoems,
   readLocalPoemPages,
+  readLocalPoemPagesAdmin,
+  updateLocalPaymentDisplay,
   updateLocalPaymentStatus,
   updateLocalPoem,
 } from './store';
@@ -32,11 +36,14 @@ const uploadFolders = {
   coverImage: path.join(uploadsRoot, 'covers'),
   backgroundMusic: path.join(uploadsRoot, 'audio'),
   paymentScreenshot: path.join(uploadsRoot, 'payments'),
+  paymentQr: path.join(uploadsRoot, 'qr'),
+  poemPdf: path.join(uploadsRoot, 'pdfs'),
 } as const;
 
 type UploadedFiles = {
   coverImage?: Express.Multer.File[];
   backgroundMusic?: Express.Multer.File[];
+  poemPdf?: Express.Multer.File[];
 };
 
 type AuthenticatedRequest = Request & {
@@ -336,6 +343,110 @@ app.get('/api/test-names', async (req, res) => {
     return res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to fetch names from database',
     });
+  }
+});
+
+app.get('/api/payment-display', async (req, res) => {
+  try {
+    const payload = await withStorageFallback<{ qr_image_url: string | null; upi_id: string | null }>(
+      async () => {
+        const pool = await getDatabasePool();
+        const result = await pool
+          .request()
+          .query('SELECT payment_qr_image_url, payment_upi_id FROM site_settings WHERE id = 1');
+
+        const row = result.recordset[0] as { payment_qr_image_url: string | null; payment_upi_id: string | null } | undefined;
+
+        if (!row) {
+          return { qr_image_url: null, upi_id: null };
+        }
+
+        return {
+          qr_image_url: toPublicUrl(req, row.payment_qr_image_url),
+          upi_id: row.payment_upi_id ?? null,
+        };
+      },
+      async () => {
+        const local = await getLocalPaymentDisplay();
+        return {
+          qr_image_url: toPublicUrl(req, local.qr_image_url),
+          upi_id: local.upi_id,
+        };
+      },
+      'payment display',
+    );
+
+    res.json(payload);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load payment display settings' });
+  }
+});
+
+app.patch('/api/admin/payment-display', requireAdminAuth, upload.single('paymentQr'), async (req, res) => {
+  try {
+    const upiIdRaw = req.body?.upiId as string | undefined;
+
+    const updated = await withStorageFallback<{ qr_image_url: string | null; upi_id: string | null }>(
+      async () => {
+        const pool = await getDatabasePool();
+        const cur = await pool
+          .request()
+          .query('SELECT payment_qr_image_url, payment_upi_id FROM site_settings WHERE id = 1');
+
+        let qr = (cur.recordset[0] as { payment_qr_image_url: string | null } | undefined)?.payment_qr_image_url ?? null;
+        let upi = (cur.recordset[0] as { payment_upi_id: string | null } | undefined)?.payment_upi_id ?? null;
+
+        if (req.file) {
+          qr = `/uploads/qr/${req.file.filename}`;
+        }
+
+        if (upiIdRaw !== undefined) {
+          upi = String(upiIdRaw).trim() || null;
+        }
+
+        await pool
+          .request()
+          .input('qr', sql.NVarChar(sql.MAX), qr)
+          .input('upi', sql.NVarChar(255), upi)
+          .query(`
+            UPDATE site_settings
+            SET payment_qr_image_url = @qr, payment_upi_id = @upi, updated_at = SYSUTCDATETIME()
+            WHERE id = 1
+          `);
+
+        return {
+          qr_image_url: toPublicUrl(req, qr),
+          upi_id: upi,
+        };
+      },
+      async () => {
+        const patch: { qr_image_url?: string | null; upi_id?: string | null } = {};
+
+        if (req.file) {
+          patch.qr_image_url = `/uploads/qr/${req.file.filename}`;
+        }
+
+        if (upiIdRaw !== undefined) {
+          patch.upi_id = String(upiIdRaw).trim() || null;
+        }
+
+        const saved = await updateLocalPaymentDisplay(patch);
+        return {
+          qr_image_url: toPublicUrl(req, saved.qr_image_url),
+          upi_id: saved.upi_id,
+        };
+      },
+      'payment display update',
+    );
+
+    res.json({
+      message: 'Payment display updated',
+      payment_display: updated,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update payment display' });
   }
 });
 
@@ -656,6 +767,7 @@ app.post(
   upload.fields([
     { name: 'coverImage', maxCount: 1 },
     { name: 'backgroundMusic', maxCount: 1 },
+    { name: 'poemPdf', maxCount: 1 },
   ]),
   async (req, res) => {
     try {
@@ -663,10 +775,11 @@ app.post(
       const files = (req.files ?? {}) as UploadedFiles;
       const coverImage = files.coverImage?.[0];
       const backgroundMusic = files.backgroundMusic?.[0];
+      const poemPdf = files.poemPdf?.[0];
       let storageMode: 'database' | 'local_fallback' = 'database';
 
-      if (!title || !price || !String(poemContent || '').trim()) {
-        return res.status(400).json({ error: 'Title, price, and poem text are required' });
+      if (!title || !price) {
+        return res.status(400).json({ error: 'Title and price are required' });
       }
 
       const parsedPrice = Number(price);
@@ -678,6 +791,33 @@ app.post(
 
       if (Number.isNaN(parsedFreePages) || parsedFreePages < 1) {
         return res.status(400).json({ error: 'Free pages must be at least 1' });
+      }
+
+      let effectivePoemContent = String(poemContent || '').trim();
+      const pdfFileUrl = poemPdf ? `/uploads/pdfs/${poemPdf.filename}` : null;
+
+      if (poemPdf) {
+        try {
+          const pdfBuffer = fs.readFileSync(poemPdf.path);
+          const pdfPages = await extractTextPagesFromPdfBuffer(pdfBuffer);
+          const nonEmptyPages = pdfPages.filter((p) => p.length > 0);
+          if (nonEmptyPages.length === 0) {
+            return res.status(400).json({
+              error:
+                'Could not extract text from this PDF. Use a text-based PDF, or type the poem in Poem Text instead.',
+            });
+          }
+          effectivePoemContent = nonEmptyPages.join('\n\n---PAGE---\n\n');
+        } catch (pdfErr) {
+          console.error(pdfErr);
+          return res.status(400).json({
+            error: pdfErr instanceof Error ? pdfErr.message : 'Failed to read or parse the PDF file',
+          });
+        }
+      }
+
+      if (!effectivePoemContent) {
+        return res.status(400).json({ error: 'Provide Poem Text or upload a PDF with extractable text' });
       }
 
       const createdPoem = await withStorageFallback<Record<string, unknown>>(
@@ -701,6 +841,7 @@ app.post(
                 sql.NVarChar(sql.MAX),
                 backgroundMusic ? `/uploads/audio/${backgroundMusic.filename}` : null,
               )
+              .input('pdfFileUrl', sql.NVarChar(sql.MAX), pdfFileUrl)
               .input('price', sql.Decimal(10, 2), parsedPrice)
               .input('freePages', sql.Int, parsedFreePages).query(`
                 INSERT INTO poems (
@@ -717,7 +858,7 @@ app.post(
                   @title,
                   @description,
                   @coverImageUrl,
-                  NULL,
+                  @pdfFileUrl,
                   @musicFileUrl,
                   @price,
                   @freePages
@@ -725,7 +866,7 @@ app.post(
               `);
 
             const insertedPoem = result.recordset[0];
-            await savePoemPages(transaction, Number(insertedPoem.id), String(poemContent));
+            await savePoemPages(transaction, Number(insertedPoem.id), effectivePoemContent);
             await transaction.commit();
 
             return insertedPoem as Record<string, unknown>;
@@ -734,20 +875,20 @@ app.post(
             throw error;
           }
         },
-        async () =>
-          {
-            storageMode = 'local_fallback';
+        async () => {
+          storageMode = 'local_fallback';
 
-            return (await createLocalPoem({
-              title,
-              description: description || '',
-              coverImageUrl: coverImage ? `/uploads/covers/${coverImage.filename}` : null,
-              musicFileUrl: backgroundMusic ? `/uploads/audio/${backgroundMusic.filename}` : null,
-              price: parsedPrice,
-              freePages: parsedFreePages,
-              poemContent: String(poemContent),
-            })) as Record<string, unknown>;
-          },
+          return (await createLocalPoem({
+            title,
+            description: description || '',
+            coverImageUrl: coverImage ? `/uploads/covers/${coverImage.filename}` : null,
+            musicFileUrl: backgroundMusic ? `/uploads/audio/${backgroundMusic.filename}` : null,
+            pdfFileUrl,
+            price: parsedPrice,
+            freePages: parsedFreePages,
+            poemContent: effectivePoemContent,
+          })) as Record<string, unknown>;
+        },
         'poem creation',
       );
 
@@ -950,7 +1091,7 @@ app.get('/api/admin/poems/:id/content', requireAdminAuth, async (req, res) => {
         };
       },
       async () => {
-        const localReadData = await readLocalPoemPages(poemId, true);
+        const localReadData = await readLocalPoemPagesAdmin(poemId);
 
         if (!localReadData) {
           return null;
@@ -982,7 +1123,7 @@ app.get('/api/admin/poems/:id/content', requireAdminAuth, async (req, res) => {
   }
 });
 
-app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
+app.get('/api/poems/:id/read', requireUserAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const poemId = parsePoemId(String(req.params.id));
 
@@ -990,9 +1131,13 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid poem id' });
     }
 
-    const isPurchased = req.query.purchased === 'true';
+    const userId = req.user!.id;
 
-    const readData = await withStorageFallback<{ pages: Record<string, unknown>[]; hasMorePages: boolean } | null>(
+    const readData = await withStorageFallback<{
+      pages: Record<string, unknown>[];
+      hasMorePages: boolean;
+      isPurchased: boolean;
+    } | null>(
       async () => {
         const pool = await getDatabasePool();
         const poemResult = await pool
@@ -1004,7 +1149,24 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
           return null;
         }
 
+        const verifiedResult = await pool
+          .request()
+          .input('poemId', sql.Int, poemId)
+          .input('userId', sql.Int, userId)
+          .query(
+            `SELECT TOP 1 1 AS ok FROM payments
+             WHERE poem_id = @poemId AND user_id = @userId AND status = N'verified'`,
+          );
+
+        const isPurchased = verifiedResult.recordset.length > 0;
+
         const freePages = Number(poemResult.recordset[0].free_pages) || 2;
+        const countResult = await pool
+          .request()
+          .input('id', sql.Int, poemId)
+          .query('SELECT COUNT(*) AS total FROM poem_pages WHERE poem_id = @id');
+        const totalPages = Number(countResult.recordset[0]?.total) || 0;
+
         const pagesRequest = pool.request().input('id', sql.Int, poemId);
         const pagesResult = isPurchased
           ? await pagesRequest.query('SELECT * FROM poem_pages WHERE poem_id = @id ORDER BY page_number ASC')
@@ -1016,11 +1178,12 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
 
         return {
           pages: pagesResult.recordset as Record<string, unknown>[],
-          hasMorePages: !isPurchased,
+          hasMorePages: !isPurchased && totalPages > freePages,
+          isPurchased,
         };
       },
       async () => {
-        const localReadData = await readLocalPoemPages(poemId, isPurchased);
+        const localReadData = await readLocalPoemPages(poemId, userId);
 
         if (!localReadData) {
           return null;
@@ -1029,6 +1192,7 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
         return {
           pages: localReadData.pages as Record<string, unknown>[],
           hasMorePages: localReadData.hasMorePages,
+          isPurchased: localReadData.isPurchased,
         };
       },
       'poem reading',
@@ -1046,7 +1210,7 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
           toPublicUrl(req, page.content_url as string | null | undefined),
         content_url: toPublicUrl(req, page.content_url as string | null | undefined),
       })),
-      isPurchased,
+      isPurchased: readData.isPurchased,
       hasMorePages: readData.hasMorePages,
     });
   } catch (err) {
@@ -1055,11 +1219,12 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req, res) => {
   }
 });
 
-app.post('/api/payments', upload.single('paymentScreenshot'), async (req, res) => {
+app.post('/api/payments', upload.single('paymentScreenshot'), requireUserAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { userName, upiRefId, poemId } = req.body;
     const screenshot = req.file;
     const parsedPoemId = parsePoemId(String(poemId || ''));
+    const userId = req.user!.id;
     let storageMode: 'database' | 'local_fallback' = 'database';
 
     if (!parsedPoemId) {
@@ -1089,6 +1254,7 @@ app.post('/api/payments', upload.single('paymentScreenshot'), async (req, res) =
         const result = await pool
           .request()
           .input('poemId', sql.Int, parsedPoemId)
+          .input('userId', sql.Int, userId)
           .input('userName', sql.NVarChar(255), String(userName).trim())
           .input('upiRefId', sql.NVarChar(255), String(upiRefId).trim())
           .input(
@@ -1098,6 +1264,7 @@ app.post('/api/payments', upload.single('paymentScreenshot'), async (req, res) =
           ).query(`
             INSERT INTO payments (
               poem_id,
+              user_id,
               user_name,
               upi_ref_id,
               screenshot_url
@@ -1105,6 +1272,7 @@ app.post('/api/payments', upload.single('paymentScreenshot'), async (req, res) =
             OUTPUT INSERTED.*
             VALUES (
               @poemId,
+              @userId,
               @userName,
               @upiRefId,
               @screenshotUrl
@@ -1121,6 +1289,7 @@ app.post('/api/payments', upload.single('paymentScreenshot'), async (req, res) =
 
         return (await createLocalPayment({
           poemId: parsedPoemId,
+          userId,
           userName: String(userName).trim(),
           upiRefId: String(upiRefId).trim(),
           screenshotUrl: screenshot ? `/uploads/payments/${screenshot.filename}` : null,

@@ -4,12 +4,12 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { clearAdminToken, getAdminAuthHeaders, getAdminToken } from '@/lib/admin-auth';
-import { ApiError, fetchApiJson, getApiUrl, type PaymentSubmission, type Poem } from '@/lib/api';
+import { ApiError, fetchApiJson, getApiUrl, type PaymentDisplay, type PaymentSubmission, type Poem } from '@/lib/api';
 
 type UploadStatus = 'idle' | 'uploading' | 'success' | 'error';
 type ManagementStatus = 'idle' | 'saving' | 'deleting' | 'success' | 'error';
-type UploadField = 'coverImage' | 'backgroundMusic';
-type ActiveTab = 'upload' | 'poems' | 'payments';
+type UploadField = 'coverImage' | 'backgroundMusic' | 'poemPdf';
+type ActiveTab = 'upload' | 'poems' | 'payments' | 'paymentQr';
 type FeedbackTone = 'success' | 'error';
 
 type PoemFormValues = {
@@ -82,10 +82,17 @@ export default function AdminPanel() {
   const [selectedFiles, setSelectedFiles] = useState<{
     coverImage: File | null;
     backgroundMusic: File | null;
+    poemPdf: File | null;
   }>({
     coverImage: null,
     backgroundMusic: null,
+    poemPdf: null,
   });
+  const [paymentDisplay, setPaymentDisplay] = useState<PaymentDisplay | null>(null);
+  const [paymentUpiId, setPaymentUpiId] = useState('');
+  const [paymentQrFile, setPaymentQrFile] = useState<File | null>(null);
+  const [paymentDisplayStatus, setPaymentDisplayStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
+  const [paymentDisplayMessage, setPaymentDisplayMessage] = useState('');
 
   const redirectToLogin = (message?: string) => {
     clearAdminToken();
@@ -197,6 +204,7 @@ export default function AdminPanel() {
     setSelectedFiles({
       coverImage: null,
       backgroundMusic: null,
+      poemPdf: null,
     });
   };
 
@@ -211,6 +219,12 @@ export default function AdminPanel() {
     setUploadStatus('uploading');
     setUploadMessage('');
 
+    if (!formValues.poemContent.trim() && !selectedFiles.poemPdf) {
+      setUploadStatus('error');
+      setUploadMessage('Enter poem text or upload a PDF file.');
+      return;
+    }
+
     const payload = new FormData();
     payload.append('title', formValues.title);
     payload.append('price', formValues.price);
@@ -224,6 +238,10 @@ export default function AdminPanel() {
 
     if (selectedFiles.backgroundMusic) {
       payload.append('backgroundMusic', selectedFiles.backgroundMusic);
+    }
+
+    if (selectedFiles.poemPdf) {
+      payload.append('poemPdf', selectedFiles.poemPdf);
     }
 
     try {
@@ -252,6 +270,74 @@ export default function AdminPanel() {
 
       setUploadStatus('error');
       setUploadMessage(getErrorMessage(error, 'Unable to upload poem'));
+    }
+  };
+
+  const loadPaymentDisplay = async () => {
+    setPaymentDisplayMessage('');
+    try {
+      const d = await fetchApiJson<PaymentDisplay>('/api/payment-display');
+      setPaymentDisplay(d);
+      setPaymentUpiId(d.upi_id || '');
+      setPaymentQrFile(null);
+      setPaymentDisplayStatus('idle');
+    } catch (error) {
+      setPaymentDisplayStatus('error');
+      setPaymentDisplayMessage(getErrorMessage(error, 'Unable to load payment display'));
+    }
+  };
+
+  const handleSavePaymentDisplay = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const token = getAdminToken();
+
+    if (!token) {
+      redirectToLogin();
+      return;
+    }
+
+    setPaymentDisplayStatus('saving');
+    setPaymentDisplayMessage('');
+
+    const fd = new FormData();
+    fd.append('upiId', paymentUpiId);
+    if (paymentQrFile) {
+      fd.append('paymentQr', paymentQrFile);
+    }
+
+    try {
+      const response = await fetch(getApiUrl('/api/admin/payment-display'), {
+        method: 'PATCH',
+        headers: getAdminAuthHeaders(),
+        body: fd,
+      });
+
+      const data = (await response.json()) as {
+        error?: string;
+        message?: string;
+        payment_display?: PaymentDisplay;
+      };
+
+      if (!response.ok) {
+        throw new ApiError(response.status, data.error || 'Unable to save payment display');
+      }
+
+      if (data.payment_display) {
+        setPaymentDisplay(data.payment_display);
+        setPaymentUpiId(data.payment_display.upi_id || '');
+      }
+
+      setPaymentQrFile(null);
+      setPaymentDisplayStatus('success');
+      setPaymentDisplayMessage(data.message || 'Payment QR and UPI ID saved.');
+    } catch (error) {
+      if (isAdminSessionError(error)) {
+        redirectToLogin('Admin session expired. Please login again.');
+        return;
+      }
+
+      setPaymentDisplayStatus('error');
+      setPaymentDisplayMessage(getErrorMessage(error, 'Unable to save payment display'));
     }
   };
 
@@ -473,6 +559,17 @@ export default function AdminPanel() {
               Verify Payments
             </button>
             <button
+              onClick={() => {
+                setActiveTab('paymentQr');
+                void loadPaymentDisplay();
+              }}
+              className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                activeTab === 'paymentQr' ? 'bg-[#8a735c] text-white' : 'hover:bg-[#e8dfd5]'
+              }`}
+            >
+              Payment QR
+            </button>
+            <button
               onClick={logout}
               className="rounded-full border border-[#e8dfd5] px-4 py-2 text-sm font-bold uppercase tracking-widest text-[#8a735c] transition-colors hover:bg-[#f7f3ec]"
             >
@@ -495,14 +592,22 @@ export default function AdminPanel() {
           <div className="rounded-3xl border border-[#e8dfd5] bg-white px-6 py-6 shadow-sm">
             <p className="text-xs font-sans uppercase tracking-[0.3em] text-[#8a735c]">Current Focus</p>
             <p className="mt-4 text-2xl font-bold text-[#5a4838]">
-              {activeTab === 'upload' ? 'Publishing' : activeTab === 'poems' ? 'Editing' : 'Payments'}
+              {activeTab === 'upload'
+                ? 'Publishing'
+                : activeTab === 'poems'
+                  ? 'Editing'
+                  : activeTab === 'payments'
+                    ? 'Payments'
+                    : 'Checkout'}
             </p>
             <p className="mt-2 text-sm font-sans text-[#8a735c]">
               {activeTab === 'poems'
                 ? 'Review, update, or remove existing poems.'
                 : activeTab === 'upload'
                   ? 'Add a fresh poem to the library.'
-                  : 'Review incoming payment requests and update their status.'}
+                  : activeTab === 'paymentQr'
+                    ? 'Set the UPI QR image and ID shown on the customer payment page.'
+                    : 'Review incoming payment requests and update their status.'}
             </p>
           </div>
 
@@ -571,15 +676,42 @@ export default function AdminPanel() {
               </div>
 
               <div className="space-y-2">
-                <label className="block text-sm font-bold text-[#6b5846]">Poem Text</label>
+                <label className="block text-sm font-bold text-[#6b5846]">
+                  Poem Text{' '}
+                  <span className="font-sans text-xs font-normal text-[#8a735c]">
+                    (or upload a PDF below—each PDF page becomes one reader page after the title screen)
+                  </span>
+                </label>
                 <textarea
-                  required
                   rows={10}
                   value={formValues.poemContent}
                   onChange={(e) => setFormValues((prev) => ({ ...prev, poemContent: e.target.value }))}
                   className="w-full px-4 py-3 bg-[#fdfcfb] border border-[#e8dfd5] rounded-xl focus:ring-2 focus:ring-[#8a735c] outline-none font-sans leading-7"
-                  placeholder={`Type your poem here.\n\nUse ---PAGE--- on a new line to split multiple pages.`}
+                  placeholder={`Type your poem here.\n\nUse ---PAGE--- on a new line to split multiple pages.\n\nLeave empty if you upload a PDF instead.`}
                 />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-sm font-bold text-[#6b5846]">Poem PDF (optional)</label>
+                <div className="flex items-center justify-center w-full">
+                  <label className="flex min-h-[7rem] w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-[#e8dfd5] bg-[#fdfcfb] px-4 py-4 transition-colors hover:bg-[#f7f3ec]">
+                    <span className="mb-1 text-2xl font-bold text-[#8a735c]">PDF</span>
+                    <p className="mb-1 text-center text-sm text-[#8a735c]">
+                      <span className="font-semibold">
+                        {selectedFiles.poemPdf?.name || 'Click to upload a .pdf'}
+                      </span>
+                    </p>
+                    <p className="max-w-md text-center text-xs text-[#a89684]">
+                      Text-based PDFs work best. If you upload a PDF, it overrides poem text for page content.
+                    </p>
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept="application/pdf,.pdf"
+                      onChange={(e) => updateFile('poemPdf', e.target.files?.[0] || null)}
+                    />
+                  </label>
+                </div>
               </div>
 
               <div className="border-t border-[#e8dfd5] pt-6 grid grid-cols-1 gap-6">
@@ -964,6 +1096,74 @@ export default function AdminPanel() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'paymentQr' && (
+          <div className="mx-auto max-w-2xl rounded-2xl border border-[#e8dfd5] bg-white p-8 shadow-sm">
+            <h2 className="mb-2 font-serif text-3xl font-bold text-[#5a4838]">Payment QR and UPI</h2>
+            <p className="mb-8 font-sans text-sm text-[#8a735c]">
+              This is shown to customers on the Unlock Poem payment page. Upload a QR image and set your UPI ID.
+            </p>
+
+            {paymentDisplayMessage ? (
+              <p
+                className={`mb-6 rounded-xl px-4 py-3 text-sm font-medium ${
+                  paymentDisplayStatus === 'success'
+                    ? 'border border-green-200 bg-green-50 text-green-700'
+                    : paymentDisplayStatus === 'error'
+                      ? 'border border-red-200 bg-red-50 text-red-700'
+                      : 'border border-[#e8dfd5] bg-[#f7f3ec] text-[#6b5846]'
+                }`}
+              >
+                {paymentDisplayMessage}
+              </p>
+            ) : null}
+
+            <form onSubmit={handleSavePaymentDisplay} className="space-y-6">
+              <div className="grid gap-6 md:grid-cols-2">
+                <div>
+                  <label className="mb-2 block text-sm font-bold text-[#6b5846]">UPI ID</label>
+                  <input
+                    type="text"
+                    value={paymentUpiId}
+                    onChange={(e) => setPaymentUpiId(e.target.value)}
+                    placeholder="yourname@upi"
+                    className="w-full rounded-xl border border-[#e8dfd5] bg-[#fdfcfb] px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-[#8a735c]"
+                  />
+                </div>
+                <div className="flex flex-col items-center justify-center rounded-xl border border-[#e8dfd5] bg-[#fdfcfb] p-4">
+                  <span className="mb-2 text-xs font-bold uppercase tracking-widest text-[#8a735c]">Current QR</span>
+                  {paymentDisplay?.qr_image_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={paymentDisplay.qr_image_url} alt="Payment QR" className="h-36 w-36 object-contain" />
+                  ) : (
+                    <span className="text-xs text-[#8a735c]">None uploaded yet</span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-bold text-[#6b5846]">Replace QR image</label>
+                <label className="flex h-28 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-[#e8dfd5] bg-[#fdfcfb] transition-colors hover:bg-[#f7f3ec]">
+                  <span className="text-sm text-[#8a735c]">{paymentQrFile?.name || 'Choose image (PNG, JPG, WebP)'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => setPaymentQrFile(e.target.files?.[0] || null)}
+                  />
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={paymentDisplayStatus === 'saving'}
+                className="w-full rounded-xl bg-[#8a725c] py-3 text-sm font-bold uppercase tracking-widest text-white transition-colors hover:bg-[#6b5846] disabled:opacity-60"
+              >
+                {paymentDisplayStatus === 'saving' ? 'Saving...' : 'Save payment display'}
+              </button>
+            </form>
           </div>
         )}
       </main>
