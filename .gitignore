@@ -29,6 +29,8 @@ yarn-error.log*
 backend/uploads/
 backend/data/
 backend/.dotnet/
+backend/**/bin/
+backend/**/obj/
 
 # tooling
 frontend/next-env.d.ts
