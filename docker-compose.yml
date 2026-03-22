@@ -1,0 +1,44 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: poetry_db
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Express"
+      MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+
+  db-init:
+    image: mcr.microsoft.com/mssql-tools
+    depends_on:
+      - db
+    environment:
+      MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
+    volumes:
+      - ./backend/src/init.sql:/init.sql:ro
+    entrypoint: /bin/bash
+    command: >-
+      -c "
+      for tool in /opt/mssql-tools18/bin/sqlcmd /opt/mssql-tools/bin/sqlcmd; do
+        if [ -x \"$$tool\" ]; then
+          SQLCMD=\"$$tool\";
+          break;
+        fi;
+      done;
+      if [ -z \"$$SQLCMD\" ]; then
+        echo 'sqlcmd not found in mssql-tools image';
+        exit 1;
+      fi;
+      until \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -No -C -Q \"SELECT 1\" >/dev/null 2>&1; do
+        sleep 2;
+      done;
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -No -C -Q \"IF DB_ID('poems_db') IS NULL CREATE DATABASE poems_db;\";
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poems_db -No -C -i /init.sql
+      "
+    restart: "no"
+
+volumes:
+  sqlserver_data:
