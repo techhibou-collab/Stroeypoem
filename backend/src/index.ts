@@ -26,7 +26,7 @@ import {
 } from './store';
 
 const app = express();
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 5005);
 const DB_OPERATION_TIMEOUT_MS = Number(process.env.DB_OPERATION_TIMEOUT_MS || 5000);
 const JWT_SECRET = process.env.JWT_SECRET || 'poetry-hub-admin-secret';
 const DEFAULT_ADMIN_LOGIN_ID = process.env.ADMIN_LOGIN_ID || 'sunheriyaadonkemoti@gmail.com';
@@ -83,7 +83,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 400 * 1024 * 1024 }, // Allowed 400 MB for PDF and MP3 uploads
 });
 
 app.use(cors());
@@ -800,24 +800,27 @@ app.post(
         try {
           const pdfBuffer = fs.readFileSync(poemPdf.path);
           const pdfPages = await extractTextPagesFromPdfBuffer(pdfBuffer);
-          const nonEmptyPages = pdfPages.filter((p) => p.length > 0);
-          if (nonEmptyPages.length === 0) {
-            return res.status(400).json({
-              error:
-                'Could not extract text from this PDF. Use a text-based PDF, or type the poem in Poem Text instead.',
-            });
+
+          if (pdfPages.length > 0) {
+            // Use [PDF_PAGE] marker for pages without text to ensure they show up page-wise
+            effectivePoemContent = pdfPages
+              .map((p) => p.trim() || '[PDF_PAGE]')
+              .join('\n\n---PAGE---\n\n');
+          } else if (!effectivePoemContent) {
+            effectivePoemContent = '[PDF_PAGE]';
           }
-          effectivePoemContent = nonEmptyPages.join('\n\n---PAGE---\n\n');
+          // If nonEmptyPages.length === 0 but effectivePoemContent ALREADY had manual text,
+          // we keep the manual text.
         } catch (pdfErr) {
-          console.error(pdfErr);
-          return res.status(400).json({
-            error: pdfErr instanceof Error ? pdfErr.message : 'Failed to read or parse the PDF file',
-          });
+          console.error('PDF extraction failed:', pdfErr);
+          if (!effectivePoemContent) {
+            effectivePoemContent = '[PDF_PAGE]';
+          }
         }
       }
 
       if (!effectivePoemContent) {
-        return res.status(400).json({ error: 'Provide Poem Text or upload a PDF with extractable text' });
+        return res.status(400).json({ error: 'Please provide poem text or upload a PDF.' });
       }
 
       const createdPoem = await withStorageFallback<Record<string, unknown>>(
@@ -936,80 +939,136 @@ app.get('/api/poems/:id', async (req, res) => {
   }
 });
 
-app.put('/api/poems/:id', requireAdminAuth, async (req, res) => {
-  try {
-    const poemId = parsePoemId(String(req.params.id));
+app.put(
+  '/api/poems/:id',
+  requireAdminAuth,
+  upload.fields([
+    { name: 'coverImage', maxCount: 1 },
+    { name: 'backgroundMusic', maxCount: 1 },
+    { name: 'poemPdf', maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const poemId = parsePoemId(String(req.params.id));
 
-    if (!poemId) {
-      return res.status(400).json({ error: 'Invalid poem id' });
-    }
+      if (!poemId) {
+        return res.status(400).json({ error: 'Invalid poem id' });
+      }
 
-    const { title, description, price, freePages, poemContent } = req.body;
+      const { title, description, price, freePages, poemContent } = req.body;
+      const files = (req.files ?? {}) as UploadedFiles;
+      const coverImage = files.coverImage?.[0];
+      const backgroundMusic = files.backgroundMusic?.[0];
+      const poemPdf = files.poemPdf?.[0];
 
-    if (!title || price === undefined || price === null || !String(poemContent || '').trim()) {
-      return res.status(400).json({ error: 'Title, price, and poem text are required' });
-    }
+      if (!title || price === undefined || price === null || !String(poemContent || '').trim()) {
+        return res.status(400).json({ error: 'Title, price, and poem text are required' });
+      }
 
-    const parsedPrice = Number(price);
-    const parsedFreePages = freePages ? Number(freePages) : 2;
+      const parsedPrice = Number(price);
+      const parsedFreePages = freePages ? Number(freePages) : 2;
 
-    if (Number.isNaN(parsedPrice) || parsedPrice < 0) {
-      return res.status(400).json({ error: 'Price must be a valid positive number' });
-    }
+      if (Number.isNaN(parsedPrice) || parsedPrice < 0) {
+        return res.status(400).json({ error: 'Price must be a valid positive number' });
+      }
 
-    if (Number.isNaN(parsedFreePages) || parsedFreePages < 1) {
-      return res.status(400).json({ error: 'Free pages must be at least 1' });
-    }
+      if (Number.isNaN(parsedFreePages) || parsedFreePages < 1) {
+        return res.status(400).json({ error: 'Free pages must be at least 1' });
+      }
 
-    const updatedPoem = await withStorageFallback<Record<string, unknown> | null>(
-      async () => {
-        const pool = await getDatabasePool();
-        const transaction = new sql.Transaction(pool);
-        await transaction.begin();
-
+      let effectivePoemContent = String(poemContent || '').trim();
+      if (poemPdf) {
         try {
-          const result = await transaction
-            .request()
-            .input('id', sql.Int, poemId)
-            .input('title', sql.NVarChar(255), title)
-            .input('description', sql.NVarChar(sql.MAX), description || '')
-            .input('price', sql.Decimal(10, 2), parsedPrice)
-            .input('freePages', sql.Int, parsedFreePages).query(`
+          const pdfBuffer = fs.readFileSync(poemPdf.path);
+          const pdfPages = await extractTextPagesFromPdfBuffer(pdfBuffer);
+
+          if (pdfPages.length > 0) {
+            effectivePoemContent = pdfPages
+              .map((p) => p.trim() || '[PDF_PAGE]')
+              .join('\n\n---PAGE---\n\n');
+          } else if (!effectivePoemContent) {
+            effectivePoemContent = '[PDF_PAGE]';
+          }
+        } catch (pdfErr) {
+          console.error('PDF extraction failed:', pdfErr);
+          if (!effectivePoemContent) {
+            effectivePoemContent = '[PDF_PAGE]';
+          }
+        }
+      }
+
+      const updatedPoem = await withStorageFallback<Record<string, unknown> | null>(
+        async () => {
+          const pool = await getDatabasePool();
+          const transaction = new sql.Transaction(pool);
+          await transaction.begin();
+
+          try {
+            let updateQuery = `
               UPDATE poems
               SET
                 title = @title,
                 description = @description,
                 price = @price,
-                free_pages = @freePages,
-                pdf_file_url = NULL
+                free_pages = @freePages
+            `;
+
+            const request = transaction.request()
+              .input('id', sql.Int, poemId)
+              .input('title', sql.NVarChar(255), title)
+              .input('description', sql.NVarChar(sql.MAX), description || '')
+              .input('price', sql.Decimal(10, 2), parsedPrice)
+              .input('freePages', sql.Int, parsedFreePages);
+
+            if (coverImage) {
+              updateQuery += `, cover_image_url = @coverImageUrl`;
+              request.input('coverImageUrl', sql.NVarChar(sql.MAX), `/uploads/covers/${coverImage.filename}`);
+            }
+
+            if (backgroundMusic) {
+              updateQuery += `, music_file_url = @musicFileUrl`;
+              request.input('musicFileUrl', sql.NVarChar(sql.MAX), `/uploads/audio/${backgroundMusic.filename}`);
+            }
+
+            if (poemPdf) {
+              updateQuery += `, pdf_file_url = @pdfFileUrl`;
+              request.input('pdfFileUrl', sql.NVarChar(sql.MAX), `/uploads/pdfs/${poemPdf.filename}`);
+            }
+
+            updateQuery += `
               OUTPUT INSERTED.*
               WHERE id = @id
-            `);
+            `;
 
-          if (result.recordset.length === 0) {
+            const result = await request.query(updateQuery);
+
+            if (result.recordset.length === 0) {
+              await transaction.rollback();
+              return null;
+            }
+
+            await savePoemPages(transaction, poemId, effectivePoemContent);
+            await transaction.commit();
+
+            return result.recordset[0] as Record<string, unknown>;
+          } catch (error) {
             await transaction.rollback();
-            return null;
+            throw error;
           }
-
-          await savePoemPages(transaction, poemId, String(poemContent));
-          await transaction.commit();
-
-          return result.recordset[0] as Record<string, unknown>;
-        } catch (error) {
-          await transaction.rollback();
-          throw error;
-        }
-      },
-      async () =>
-        (await updateLocalPoem(poemId, {
-          title,
-          description: description || '',
-          price: parsedPrice,
-          freePages: parsedFreePages,
-          poemContent: String(poemContent),
-        })) as Record<string, unknown> | null,
-      'poem update',
-    );
+        },
+        async () =>
+          (await updateLocalPoem(poemId, {
+            title,
+            description: description || '',
+            price: parsedPrice,
+            freePages: parsedFreePages,
+            poemContent: effectivePoemContent,
+            coverImageUrl: coverImage ? `/uploads/covers/${coverImage.filename}` : undefined,
+            musicFileUrl: backgroundMusic ? `/uploads/audio/${backgroundMusic.filename}` : undefined,
+            pdfFileUrl: poemPdf ? `/uploads/pdfs/${poemPdf.filename}` : undefined,
+          })) as Record<string, unknown> | null,
+        'poem update',
+      );
 
     if (!updatedPoem) {
       return res.status(404).json({ error: 'Poem not found' });
@@ -1158,7 +1217,7 @@ app.get('/api/poems/:id/read', requireUserAuth, async (req: AuthenticatedRequest
              WHERE poem_id = @poemId AND user_id = @userId AND status = N'verified'`,
           );
 
-        const isPurchased = verifiedResult.recordset.length > 0;
+        const isPurchased = req.user?.role === 'admin' || verifiedResult.recordset.length > 0;
 
         const freePages = Number(poemResult.recordset[0].free_pages) || 2;
         const countResult = await pool

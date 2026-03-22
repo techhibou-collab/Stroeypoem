@@ -62,6 +62,21 @@ const isAdminSessionError = (error: unknown) =>
 
 const getErrorMessage = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 
+const ProgressBar = ({ progress, label }: { progress: number; label: string }) => (
+  <div className="space-y-2">
+    <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-[#8a725c]">
+      <span>{label}</span>
+      <span>{Math.round(progress)}%</span>
+    </div>
+    <div className="h-2 w-full overflow-hidden rounded-full bg-[#e8dfd5]">
+      <div
+        className="h-full bg-[#8a725c] transition-all duration-300 ease-out"
+        style={{ width: `${progress}%` }}
+      />
+    </div>
+  </div>
+);
+
 export default function AdminPanel() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<ActiveTab>('upload');
@@ -93,6 +108,17 @@ export default function AdminPanel() {
   const [paymentQrFile, setPaymentQrFile] = useState<File | null>(null);
   const [paymentDisplayStatus, setPaymentDisplayStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [paymentDisplayMessage, setPaymentDisplayMessage] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [managementProgress, setManagementProgress] = useState(0);
+  const [editFiles, setEditFiles] = useState<{
+    coverImage: File | null;
+    backgroundMusic: File | null;
+    poemPdf: File | null;
+  }>({
+    coverImage: null,
+    backgroundMusic: null,
+    poemPdf: null,
+  });
 
   const redirectToLogin = (message?: string) => {
     clearAdminToken();
@@ -199,6 +225,10 @@ export default function AdminPanel() {
     setSelectedFiles((prev) => ({ ...prev, [field]: file }));
   };
 
+  const updateEditFile = (field: UploadField, file: File | null) => {
+    setEditFiles((prev) => ({ ...prev, [field]: file }));
+  };
+
   const resetUploadForm = () => {
     setFormValues(createEmptyForm());
     setSelectedFiles({
@@ -211,6 +241,12 @@ export default function AdminPanel() {
   const resetEditState = () => {
     setEditingPoemId(null);
     setEditValues(createEmptyForm());
+    setEditFiles({
+      coverImage: null,
+      backgroundMusic: null,
+      poemPdf: null,
+    });
+    setManagementProgress(0);
   };
 
   const handleUpload = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -218,6 +254,7 @@ export default function AdminPanel() {
     const form = e.currentTarget;
     setUploadStatus('uploading');
     setUploadMessage('');
+    setUploadProgress(0);
 
     if (!formValues.poemContent.trim() && !selectedFiles.poemPdf) {
       setUploadStatus('error');
@@ -245,20 +282,41 @@ export default function AdminPanel() {
     }
 
     try {
-      const response = await fetch(getApiUrl('/api/poems'), {
-        method: 'POST',
-        headers: getAdminAuthHeaders(),
-        body: payload,
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', getApiUrl('/api/poems'));
+        
+        const token = getAdminToken();
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = (event.loaded / event.total) * 100;
+            setUploadProgress(percent);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            try {
+              const data = JSON.parse(xhr.responseText) as { error?: string };
+              reject(new ApiError(xhr.status, data.error || 'Upload failed'));
+            } catch {
+              reject(new ApiError(xhr.status, 'Upload failed'));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.send(payload);
       });
 
-      const data = (await response.json()) as { error?: string; message?: string };
-
-      if (!response.ok) {
-        throw new ApiError(response.status, data.error || 'Unable to upload poem');
-      }
-
       setUploadStatus('success');
-      setUploadMessage(data.message || 'Poem published successfully.');
+      setUploadMessage('Poem published successfully.');
       form.reset();
       resetUploadForm();
       await loadPoems();
@@ -382,31 +440,63 @@ export default function AdminPanel() {
 
     setManagementStatus('saving');
     setManagementMessage('');
+    setManagementProgress(0);
+
+    const payload = new FormData();
+    payload.append('title', editValues.title);
+    payload.append('description', editValues.description);
+    payload.append('price', editValues.price);
+    payload.append('freePages', editValues.freePages);
+    payload.append('poemContent', editValues.poemContent);
+
+    if (editFiles.coverImage) {
+      payload.append('coverImage', editFiles.coverImage);
+    }
+
+    if (editFiles.backgroundMusic) {
+      payload.append('backgroundMusic', editFiles.backgroundMusic);
+    }
+
+    if (editFiles.poemPdf) {
+      payload.append('poemPdf', editFiles.poemPdf);
+    }
 
     try {
-      const response = await fetch(getApiUrl(`/api/poems/${editingPoemId}`), {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          ...getAdminAuthHeaders(),
-        },
-        body: JSON.stringify({
-          title: editValues.title,
-          description: editValues.description,
-          price: editValues.price,
-          freePages: editValues.freePages,
-          poemContent: editValues.poemContent,
-        }),
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', getApiUrl(`/api/poems/${editingPoemId}`));
+
+        const token = getAdminToken();
+        if (token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+        }
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const percent = (event.loaded / event.total) * 100;
+            setManagementProgress(percent);
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            try {
+              const data = JSON.parse(xhr.responseText) as { error?: string };
+              reject(new ApiError(xhr.status, data.error || 'Update failed'));
+            } catch {
+              reject(new ApiError(xhr.status, 'Update failed'));
+            }
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error during update'));
+        xhr.send(payload);
       });
 
-      const data = (await response.json()) as { error?: string; message?: string };
-
-      if (!response.ok) {
-        throw new ApiError(response.status, data.error || 'Unable to update poem');
-      }
-
       setManagementStatus('success');
-      setManagementMessage(data.message || 'Poem updated successfully.');
+      setManagementMessage('Poem updated successfully.');
       resetEditState();
       await loadPoems();
     } catch (error) {
@@ -763,6 +853,12 @@ export default function AdminPanel() {
                 </div>
               </div>
 
+              {uploadStatus === 'uploading' && (
+                <div className="mt-4">
+                  <ProgressBar progress={uploadProgress} label="Uploading Poem Contents..." />
+                </div>
+              )}
+
               {uploadStatus !== 'idle' && uploadMessage && (
                 <p
                   className={`rounded-xl px-4 py-3 text-sm font-medium ${
@@ -773,7 +869,7 @@ export default function AdminPanel() {
                         : 'border border-[#e8dfd5] bg-[#fdfcfb] text-[#8a735c]'
                   }`}
                 >
-                  {uploadMessage || (uploadStatus === 'uploading' ? 'Uploading poem...' : '')}
+                  {uploadMessage}
                 </p>
               )}
 
@@ -909,10 +1005,52 @@ export default function AdminPanel() {
                     />
                   </div>
 
+                  <div className="space-y-4 border-t border-[#e8dfd5] pt-6">
+                    <h4 className="text-sm font-bold text-[#6b5846]">Update Assets (Optional)</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <div className="space-y-1">
+                        <label className="block text-xs font-bold text-[#8a735c] uppercase">Cover Image</label>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => updateEditFile('coverImage', e.target.files?.[0] || null)}
+                          className="w-full text-xs text-[#8a735c] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-[#e8dfd5] file:text-[#8a735c] hover:file:bg-[#d8cbb8] cursor-pointer"
+                        />
+                        {editFiles.coverImage && <p className="text-[10px] text-green-600 truncate">{editFiles.coverImage.name}</p>}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-xs font-bold text-[#8a735c] uppercase">Background Music</label>
+                        <input
+                          type="file"
+                          accept="audio/*"
+                          onChange={(e) => updateEditFile('backgroundMusic', e.target.files?.[0] || null)}
+                          className="w-full text-xs text-[#8a735c] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-[#e8dfd5] file:text-[#8a735c] hover:file:bg-[#d8cbb8] cursor-pointer"
+                        />
+                        {editFiles.backgroundMusic && <p className="text-[10px] text-green-600 truncate">{editFiles.backgroundMusic.name}</p>}
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-xs font-bold text-[#8a735c] uppercase">Poem PDF</label>
+                        <input
+                          type="file"
+                          accept="application/pdf"
+                          onChange={(e) => updateEditFile('poemPdf', e.target.files?.[0] || null)}
+                          className="w-full text-xs text-[#8a735c] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-xs file:font-bold file:bg-[#e8dfd5] file:text-[#8a735c] hover:file:bg-[#d8cbb8] cursor-pointer"
+                        />
+                        {editFiles.poemPdf && <p className="text-[10px] text-green-600 truncate">{editFiles.poemPdf.name}</p>}
+                      </div>
+                    </div>
+                  </div>
+
+                  {managementStatus === 'saving' && (
+                    <div className="mt-4">
+                      <ProgressBar progress={managementProgress} label="Saving Changes..." />
+                    </div>
+                  )}
+
                   <button
                     type="submit"
                     disabled={managementStatus === 'saving'}
-                    className="rounded-xl bg-[#8a735c] px-6 py-3 text-sm font-bold uppercase tracking-widest text-white transition-colors hover:bg-[#6b5846]"
+                    className="rounded-xl bg-[#8a735c] px-6 py-3 text-sm font-bold uppercase tracking-widest text-white transition-colors hover:bg-[#6b5846] w-full md:w-auto"
                   >
                     {managementStatus === 'saving' ? 'Saving...' : 'Save Changes'}
                   </button>

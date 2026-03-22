@@ -321,7 +321,15 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
                   </div>
 
                   {currentContent ? (
-                    isImageUrl(currentContent.content) ? (
+                    currentContent.content === '[PDF_PAGE]' && poem.pdf_file_url ? (
+                      <div className="w-full h-[70vh] rounded-2xl overflow-hidden border border-[#d8cbb8] shadow-inner">
+                        <iframe
+                          src={`${poem.pdf_file_url}#page=${currentContent.page_number}&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
+                          className="w-full h-full border-0"
+                          title={`PDF Page ${currentContent.page_number}`}
+                        />
+                      </div>
+                    ) : isImageUrl(currentContent.content) ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
                         src={currentContent.content}

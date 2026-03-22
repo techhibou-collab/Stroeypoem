@@ -76,6 +76,9 @@ type UpdatePoemInput = {
   price: number;
   freePages: number;
   poemContent: string;
+  pdfFileUrl?: string | null;
+  musicFileUrl?: string | null;
+  coverImageUrl?: string | null;
 };
 
 type CreatePaymentInput = {
@@ -260,7 +263,8 @@ export const createLocalPoem = async ({
   return poem;
 };
 
-export const updateLocalPoem = async (poemId: number, { title, description, price, freePages, poemContent }: UpdatePoemInput) => {
+export const updateLocalPoem = async (poemId: number, input: UpdatePoemInput) => {
+  const { title, description, price, freePages, poemContent, pdfFileUrl, musicFileUrl, coverImageUrl } = input;
   const pages = parsePoemPages(poemContent);
 
   if (pages.length === 0) {
@@ -278,7 +282,18 @@ export const updateLocalPoem = async (poemId: number, { title, description, pric
   poem.description = description || '';
   poem.price = price;
   poem.free_pages = freePages;
-  poem.pdf_file_url = null;
+
+  if (pdfFileUrl !== undefined) {
+    poem.pdf_file_url = pdfFileUrl;
+  }
+
+  if (musicFileUrl !== undefined) {
+    poem.music_file_url = musicFileUrl;
+  }
+
+  if (coverImageUrl !== undefined) {
+    poem.cover_image_url = coverImageUrl;
+  }
 
   store.poemPages = store.poemPages.filter((page) => page.poem_id !== poemId);
 
