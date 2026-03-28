@@ -10,6 +10,7 @@ export type StoredPoem = {
   music_file_url: string | null;
   price: number;
   free_pages: number;
+  preview_pdf_url: string | null;
   created_at: string;
 };
 
@@ -68,6 +69,7 @@ type CreatePoemInput = {
   price: number;
   freePages: number;
   poemContent: string;
+  previewPdfUrl?: string | null;
 };
 
 type UpdatePoemInput = {
@@ -79,6 +81,7 @@ type UpdatePoemInput = {
   pdfFileUrl?: string | null;
   musicFileUrl?: string | null;
   coverImageUrl?: string | null;
+  previewPdfUrl?: string | null;
 };
 
 type CreatePaymentInput = {
@@ -223,6 +226,7 @@ export const createLocalPoem = async ({
   price,
   freePages,
   poemContent,
+  previewPdfUrl,
 }: CreatePoemInput) => {
   const pages = parsePoemPages(poemContent);
 
@@ -241,6 +245,7 @@ export const createLocalPoem = async ({
     music_file_url: musicFileUrl,
     price,
     free_pages: freePages,
+    preview_pdf_url: previewPdfUrl ?? null,
     created_at: createdAt,
   };
 
@@ -264,7 +269,7 @@ export const createLocalPoem = async ({
 };
 
 export const updateLocalPoem = async (poemId: number, input: UpdatePoemInput) => {
-  const { title, description, price, freePages, poemContent, pdfFileUrl, musicFileUrl, coverImageUrl } = input;
+  const { title, description, price, freePages, poemContent, pdfFileUrl, musicFileUrl, coverImageUrl, previewPdfUrl } = input;
   const pages = parsePoemPages(poemContent);
 
   if (pages.length === 0) {
@@ -293,6 +298,10 @@ export const updateLocalPoem = async (poemId: number, input: UpdatePoemInput) =>
 
   if (coverImageUrl !== undefined) {
     poem.cover_image_url = coverImageUrl;
+  }
+
+  if (input.previewPdfUrl !== undefined) {
+    poem.preview_pdf_url = input.previewPdfUrl;
   }
 
   store.poemPages = store.poemPages.filter((page) => page.poem_id !== poemId);

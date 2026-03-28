@@ -5,17 +5,16 @@ import fs from 'fs';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
+import { PDFDocument } from 'pdf-lib';
 import { allowLocalFallback, getLastConnectionError, getPool, shouldSkipDatabaseAttempt, sql } from './db';
 import { extractTextPagesFromPdfBuffer } from './pdf-pages';
 import {
-  createLocalUser,
   createLocalPoem,
   createLocalPayment,
   deleteLocalPoem,
   getLocalPoemById,
   getLocalPaymentDisplay,
   getLocalPoemByTitle,
-  getLocalUserByEmail,
   listLocalPayments,
   listLocalPoems,
   readLocalPoemPages,
@@ -29,8 +28,6 @@ const app = express();
 const PORT = Number(process.env.PORT || 5005);
 const DB_OPERATION_TIMEOUT_MS = Number(process.env.DB_OPERATION_TIMEOUT_MS || 5000);
 const JWT_SECRET = process.env.JWT_SECRET || 'poetry-hub-admin-secret';
-const DEFAULT_ADMIN_LOGIN_ID = process.env.ADMIN_LOGIN_ID || 'sunheriyaadonkemoti@gmail.com';
-const DEFAULT_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Godblessme@1356';
 const uploadsRoot = path.resolve(__dirname, '..', 'uploads');
 const uploadFolders = {
   coverImage: path.join(uploadsRoot, 'covers'),
@@ -99,18 +96,39 @@ const toPublicUrl = (req: Request, filePath?: string | null) => {
     return filePath;
   }
 
-  if (!filePath.startsWith('/')) {
-    return filePath;
-  }
-
-  return `${req.protocol}://${req.get('host')}${filePath}`;
+  const host = req.get('host') || `localhost:${PORT}`;
+  const protocol = req.protocol;
+  return `${protocol}://${host}${filePath.startsWith('/') ? '' : '/'}${filePath}`;
 };
+
+async function createPdfPreview(inputPath: string, outputPath: string) {
+  try {
+    const existingPdfBytes = fs.readFileSync(inputPath);
+    const pdfDoc = await PDFDocument.load(existingPdfBytes);
+    const previewDoc = await PDFDocument.create();
+    const pageCount = pdfDoc.getPageCount();
+    const pagesToCopy = Math.min(2, pageCount);
+    
+    if (pagesToCopy > 0) {
+      const copiedPages = await previewDoc.copyPages(pdfDoc, Array.from({ length: pagesToCopy }, (_, i) => i));
+      copiedPages.forEach((page: any) => previewDoc.addPage(page));
+      const pdfBytes = await previewDoc.save();
+      fs.writeFileSync(outputPath, pdfBytes);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('Error creating PDF preview:', err);
+    return false;
+  }
+}
 
 const serializePoem = (req: Request, poem: Record<string, unknown>) => ({
   ...poem,
   cover_image_url: toPublicUrl(req, poem.cover_image_url as string | null | undefined),
   music_file_url: toPublicUrl(req, poem.music_file_url as string | null | undefined),
   pdf_file_url: toPublicUrl(req, poem.pdf_file_url as string | null | undefined),
+  preview_pdf_url: toPublicUrl(req, poem.preview_pdf_url as string | null | undefined),
 });
 
 let schemaInitializationPromise: Promise<void> | null = null;
@@ -165,6 +183,40 @@ const withStorageFallback = async <T>(
     return fallbackAction();
   }
 };
+
+/** Login, registration, and session user lookup always hit SQL Server (never local JSON), even when DB_ALLOW_LOCAL_FALLBACK is true for poems. */
+const withDatabaseOnly = async <T>(databaseAction: () => Promise<T>, operation: string): Promise<T> => {
+  if (shouldSkipDatabaseAttempt()) {
+    throw new Error(
+      'Database is temporarily unavailable after a recent connection failure. Try again in a moment.',
+    );
+  }
+
+  return Promise.race([
+    databaseAction(),
+    new Promise<T>((_, reject) => {
+      setTimeout(
+        () => reject(new Error(`Database ${operation} timed out after ${DB_OPERATION_TIMEOUT_MS}ms`)),
+        DB_OPERATION_TIMEOUT_MS,
+      );
+    }),
+  ]);
+};
+
+const isLikelyDatabaseUnavailable = (error: unknown) => {
+  const msg = error instanceof Error ? error.message : String(error);
+  return (
+    /temporarily unavailable|timed out|Failed to connect|ECONNREFUSED|ETIMEOUT|ETIMEDOUT|sequence/i.test(msg) ||
+    (error as { code?: string })?.code === 'ESOCKET'
+  );
+};
+
+const authDatabaseErrorMessage = (error: unknown, fallback: string) =>
+  isLikelyDatabaseUnavailable(error)
+    ? 'Cannot reach the database. Start SQL Server and check DB_* in .env, then try again.'
+    : error instanceof Error
+      ? error.message
+      : fallback;
 
 const parsePoemId = (id: string) => {
   const poemId = Number(id);
@@ -511,13 +563,12 @@ app.post('/api/admin/login', async (req, res) => {
       return res.status(400).json({ error: 'ID and password are required' });
     }
 
-    const adminUser = await withStorageFallback<Record<string, unknown> | null>(
-      async () => {
-        const pool = await getDatabasePool();
-        const result = await pool
-          .request()
-          .input('loginId', sql.NVarChar(255), loginId)
-          .query(`
+    const adminUser = await withDatabaseOnly<Record<string, unknown> | null>(async () => {
+      const pool = await getDatabasePool();
+      const result = await pool
+        .request()
+        .input('loginId', sql.NVarChar(255), loginId)
+        .query(`
             SELECT TOP 1 id, name, email, password_hash, role
             FROM users
             WHERE role = 'admin'
@@ -525,23 +576,8 @@ app.post('/api/admin/login', async (req, res) => {
             ORDER BY id DESC
           `);
 
-        return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
-      },
-      async () => {
-        if (loginId !== DEFAULT_ADMIN_LOGIN_ID) {
-          return null;
-        }
-
-        return {
-          id: 0,
-          name: 'Sunheri Yaadon Ke Moti Admin',
-          email: DEFAULT_ADMIN_LOGIN_ID,
-          password_hash: bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, 10),
-          role: 'admin',
-        } as Record<string, unknown>;
-      },
-      'admin login lookup',
-    );
+      return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
+    }, 'admin login lookup');
 
     if (!adminUser) {
       return res.status(401).json({ error: 'Invalid admin credentials' });
@@ -571,7 +607,8 @@ app.post('/api/admin/login', async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to login' });
+    const status = isLikelyDatabaseUnavailable(error) ? 503 : 500;
+    res.status(status).json({ error: authDatabaseErrorMessage(error, 'Failed to login') });
   }
 });
 
@@ -592,23 +629,19 @@ app.post('/api/users/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const existingUser = await withStorageFallback<Record<string, unknown> | null>(
-      async () => {
-        const pool = await getDatabasePool();
-        const result = await pool
-          .request()
-          .input('email', sql.NVarChar(255), email)
-          .query(`
+    const existingUser = await withDatabaseOnly<Record<string, unknown> | null>(async () => {
+      const pool = await getDatabasePool();
+      const result = await pool
+        .request()
+        .input('email', sql.NVarChar(255), email)
+        .query(`
             SELECT TOP 1 id, name, email, password_hash, role, created_at
             FROM users
             WHERE email = @email
           `);
 
-        return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
-      },
-      async () => (await getLocalUserByEmail(email)) as Record<string, unknown> | null,
-      'user lookup by email',
-    );
+      return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
+    }, 'user lookup by email');
 
     if (existingUser) {
       return res.status(409).json({ error: 'An account with this email already exists' });
@@ -617,31 +650,21 @@ app.post('/api/users/register', async (req, res) => {
     const passwordHash = await bcrypt.hash(password, 10);
     const userName = buildUserNameFromEmail(email);
 
-    const createdUser = await withStorageFallback<Record<string, unknown>>(
-      async () => {
-        const pool = await getDatabasePool();
-        const result = await pool
-          .request()
-          .input('name', sql.NVarChar(255), userName)
-          .input('email', sql.NVarChar(255), email)
-          .input('passwordHash', sql.NVarChar(sql.MAX), passwordHash)
-          .input('role', sql.NVarChar(50), 'user').query(`
+    const createdUser = await withDatabaseOnly<Record<string, unknown>>(async () => {
+      const pool = await getDatabasePool();
+      const result = await pool
+        .request()
+        .input('name', sql.NVarChar(255), userName)
+        .input('email', sql.NVarChar(255), email)
+        .input('passwordHash', sql.NVarChar(sql.MAX), passwordHash)
+        .input('role', sql.NVarChar(50), 'user').query(`
             INSERT INTO users (name, email, password_hash, role)
             OUTPUT INSERTED.id, INSERTED.name, INSERTED.email, INSERTED.role, INSERTED.created_at
             VALUES (@name, @email, @passwordHash, @role)
           `);
 
-        return result.recordset[0] as Record<string, unknown>;
-      },
-      async () =>
-        (await createLocalUser({
-          name: userName,
-          email,
-          passwordHash,
-          role: 'user',
-        })) as Record<string, unknown>,
-      'user registration',
-    );
+      return result.recordset[0] as Record<string, unknown>;
+    }, 'user registration');
 
     const authUser = {
       id: Number(createdUser.id),
@@ -657,7 +680,10 @@ app.post('/api/users/register', async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to create account' });
+    const status = isLikelyDatabaseUnavailable(error) ? 503 : 500;
+    res
+      .status(status)
+      .json({ error: authDatabaseErrorMessage(error, 'Failed to create account') });
   }
 });
 
@@ -670,24 +696,20 @@ app.post('/api/users/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const userRecord = await withStorageFallback<Record<string, unknown> | null>(
-      async () => {
-        const pool = await getDatabasePool();
-        const result = await pool
-          .request()
-          .input('email', sql.NVarChar(255), email)
-          .query(`
+    const userRecord = await withDatabaseOnly<Record<string, unknown> | null>(async () => {
+      const pool = await getDatabasePool();
+      const result = await pool
+        .request()
+        .input('email', sql.NVarChar(255), email)
+        .query(`
             SELECT TOP 1 id, name, email, password_hash, role, created_at
             FROM users
             WHERE email = @email
               AND role = 'user'
           `);
 
-        return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
-      },
-      async () => (await getLocalUserByEmail(email)) as Record<string, unknown> | null,
-      'user login lookup',
-    );
+      return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
+    }, 'user login lookup');
 
     if (!userRecord || String(userRecord.role || 'user') !== 'user') {
       return res.status(401).json({ error: 'Invalid email or password' });
@@ -713,7 +735,8 @@ app.post('/api/users/login', async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to login' });
+    const status = isLikelyDatabaseUnavailable(error) ? 503 : 500;
+    res.status(status).json({ error: authDatabaseErrorMessage(error, 'Failed to login') });
   }
 });
 
@@ -725,23 +748,19 @@ app.get('/api/users/me', requireUserAuth, async (req: AuthenticatedRequest, res)
       return res.status(401).json({ error: 'User login required' });
     }
 
-    const userRecord = await withStorageFallback<Record<string, unknown> | null>(
-      async () => {
-        const pool = await getDatabasePool();
-        const result = await pool
-          .request()
-          .input('id', sql.Int, userId)
-          .query(`
+    const userRecord = await withDatabaseOnly<Record<string, unknown> | null>(async () => {
+      const pool = await getDatabasePool();
+      const result = await pool
+        .request()
+        .input('id', sql.Int, userId)
+        .query(`
             SELECT TOP 1 id, name, email, role, created_at
             FROM users
             WHERE id = @id
           `);
 
-        return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
-      },
-      async () => (await getLocalUserByEmail(req.user?.email || '')) as Record<string, unknown> | null,
-      'current user lookup',
-    );
+      return (result.recordset[0] as Record<string, unknown> | undefined) ?? null;
+    }, 'current user lookup');
 
     if (!userRecord) {
       return res.status(404).json({ error: 'User not found' });
@@ -757,7 +776,8 @@ app.get('/api/users/me', requireUserAuth, async (req: AuthenticatedRequest, res)
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to load user profile' });
+    const status = isLikelyDatabaseUnavailable(error) ? 503 : 500;
+    res.status(status).json({ error: authDatabaseErrorMessage(error, 'Failed to load user profile') });
   }
 });
 
@@ -795,6 +815,7 @@ app.post(
 
       let effectivePoemContent = String(poemContent || '').trim();
       const pdfFileUrl = poemPdf ? `/uploads/pdfs/${poemPdf.filename}` : null;
+      let previewPdfUrl: string | null = null;
 
       if (poemPdf) {
         try {
@@ -811,6 +832,13 @@ app.post(
           }
           // If nonEmptyPages.length === 0 but effectivePoemContent ALREADY had manual text,
           // we keep the manual text.
+
+          const previewFilename = `preview-${poemPdf.filename}`;
+          const previewPath = path.join(uploadFolders.poemPdf, previewFilename);
+          const previewCreated = await createPdfPreview(poemPdf.path, previewPath);
+          if (previewCreated) {
+            previewPdfUrl = `/uploads/pdfs/${previewFilename}`;
+          }
         } catch (pdfErr) {
           console.error('PDF extraction failed:', pdfErr);
           if (!effectivePoemContent) {
@@ -846,25 +874,15 @@ app.post(
               )
               .input('pdfFileUrl', sql.NVarChar(sql.MAX), pdfFileUrl)
               .input('price', sql.Decimal(10, 2), parsedPrice)
-              .input('freePages', sql.Int, parsedFreePages).query(`
+              .input('freePages', sql.Int, parsedFreePages)
+              .input('previewPdfUrl', sql.NVarChar(sql.MAX), previewPdfUrl)
+              .query(`
                 INSERT INTO poems (
-                  title,
-                  description,
-                  cover_image_url,
-                  pdf_file_url,
-                  music_file_url,
-                  price,
-                  free_pages
+                  title, description, cover_image_url, music_file_url, pdf_file_url, price, free_pages, preview_pdf_url
                 )
                 OUTPUT INSERTED.*
                 VALUES (
-                  @title,
-                  @description,
-                  @coverImageUrl,
-                  @pdfFileUrl,
-                  @musicFileUrl,
-                  @price,
-                  @freePages
+                  @title, @description, @coverImageUrl, @musicFileUrl, @pdfFileUrl, @price, @freePages, @previewPdfUrl
                 )
               `);
 
