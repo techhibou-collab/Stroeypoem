@@ -5,12 +5,14 @@ dotenv.config();
 
 type SqlModule = typeof import('mssql');
 type DbConfig = import('mssql').config & {
+  connectionString?: string;
   debug?: boolean;
 };
 
-const sql: SqlModule = require('mssql');
+const useWindowsAuth = process.env.DB_WINDOWS_AUTH === 'true';
+const sql: SqlModule = useWindowsAuth ? require('mssql/msnodesqlv8') : require('mssql');
 const dbHost = process.env.DB_HOST?.trim() || 'localhost';
-const databaseName = process.env.DB_NAME?.trim() || 'poems_db';
+const databaseName = process.env.DB_NAME?.trim() || 'poetry_db';
 const instanceName = process.env.DB_INSTANCE?.trim() || undefined;
 const configuredPortValue = process.env.DB_PORT?.trim();
 const configuredPort = configuredPortValue ? Number(configuredPortValue) : undefined;
@@ -23,6 +25,7 @@ const dbUser = process.env.DB_USER?.trim();
 const encryptConnection = process.env.DB_ENCRYPT === 'true';
 const trustServerCertificate = process.env.DB_TRUST_SERVER_CERTIFICATE !== 'false';
 const dbDriver = process.env.DB_DRIVER?.trim() || undefined;
+const effectiveDriver = dbDriver || (useWindowsAuth ? 'ODBC Driver 18 for SQL Server' : undefined);
 const connectionTarget = instanceName
   ? `${dbHost}\\${instanceName}`
   : configuredPort !== undefined && Number.isFinite(configuredPort)
@@ -35,10 +38,11 @@ const config: DbConfig = {
   debug: debugEnabled,
   connectionTimeout: connectionTimeoutMs,
   requestTimeout: requestTimeoutMs,
-  ...(dbDriver ? { driver: dbDriver } : {}),
+  ...(effectiveDriver ? { driver: effectiveDriver } : {}),
   options: {
     encrypt: encryptConnection,
     trustServerCertificate,
+    ...(useWindowsAuth ? { trustedConnection: true } : {}),
     ...(instanceName ? { instanceName } : {}),
   },
   pool: {
@@ -48,7 +52,20 @@ const config: DbConfig = {
   },
 };
 
-if (dbUser) {
+if (useWindowsAuth) {
+  const yesNo = (value: boolean) => (value ? 'Yes' : 'No');
+  const driverName = effectiveDriver || 'ODBC Driver 18 for SQL Server';
+  config.connectionString = [
+    `Driver={${driverName}}`,
+    `Server={${connectionTarget}}`,
+    `Database={${databaseName}}`,
+    'Trusted_Connection=Yes',
+    `Encrypt=${yesNo(encryptConnection)}`,
+    `TrustServerCertificate=${yesNo(trustServerCertificate)}`,
+  ].join(';');
+}
+
+if (!useWindowsAuth && dbUser) {
   config.user = dbUser;
   config.password = process.env.DB_PASSWORD || '';
 }
@@ -65,6 +82,8 @@ if (debugEnabled) {
     port: config.port,
     instanceName,
     driver: config.driver,
+    useWindowsAuth,
+    hasConnectionString: Boolean(config.connectionString),
     encrypt: config.options?.encrypt,
     trustServerCertificate: config.options?.trustServerCertificate,
     hasUser: Boolean(config.user),

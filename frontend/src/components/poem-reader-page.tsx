@@ -41,6 +41,8 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
   const [musicPlayBlocked, setMusicPlayBlocked] = useState(false);
   const [isPdfLoading, setIsPdfLoading] = useState(false);
   const [pdfTocOpen, setPdfTocOpen] = useState(false);
+  const [pageTurnNonce, setPageTurnNonce] = useState(0);
+  const [pageTurnDirection, setPageTurnDirection] = useState<'forward' | 'backward'>('forward');
   const backgroundMusicRef = useRef<HTMLAudioElement | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -98,6 +100,7 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
           setHasMorePages(readData.hasMorePages);
           setIsPurchased(readData.isPurchased);
           setCurrentPage(0);
+          setPageTurnNonce(0);
         });
       } catch (error) {
         if (isCancelled) {
@@ -199,21 +202,34 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
     }
   }, [currentPage, currentContent, usePdfFlipbook]);
 
+  const moveToPage = (pageIndex: number) => {
+    if (pageIndex < 0 || pageIndex >= totalPages || pageIndex === currentPage) {
+      return;
+    }
+
+    if (!pdfReadingMode) {
+      setPageTurnDirection(pageIndex > currentPage ? 'forward' : 'backward');
+      setPageTurnNonce((prev) => prev + 1);
+    }
+
+    setCurrentPage(pageIndex);
+  };
+
   const handleNext = () => {
     if (currentPage < totalPages - 1) {
-      setCurrentPage((prev) => prev + 1);
+      moveToPage(currentPage + 1);
     }
   };
 
   const goToPage = (pageIndex: number) => {
     if (pageIndex >= 0 && pageIndex < totalPages) {
-      setCurrentPage(pageIndex);
+      moveToPage(pageIndex);
     }
   };
 
   const handlePrev = () => {
     if (currentPage > 0) {
-      setCurrentPage((prev) => prev - 1);
+      moveToPage(currentPage - 1);
     }
   };
 
@@ -233,6 +249,13 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
   const handleProceedToPayment = () => {
     stopAllPoemAudio();
   };
+
+  const readerPaperAnimationClass =
+    pageTurnNonce > 0
+      ? pageTurnDirection === 'forward'
+        ? 'reader-paper-sheet--turn-forward'
+        : 'reader-paper-sheet--turn-backward'
+      : '';
 
   return (
     <div
@@ -498,86 +521,101 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
                 </div>
               </div>
 
-              <div className="flex-1 p-4 md:p-12 overflow-y-auto flex flex-col items-center justify-center bg-white/10">
-                {currentPage === 0 ? (
-                  <div className="text-center space-y-8 animate-in slide-in-from-bottom-4 duration-700">
-                    <div className="space-y-4">
-                      <p className="text-xs font-sans uppercase tracking-[0.4em] text-[#8a7251] opacity-60">Welcome to</p>
-                      <h2 className="text-4xl md:text-6xl font-extrabold text-[#796349] uppercase tracking-tighter leading-none">
-                        Poetry<br />
-                        <span className="text-[#9c8466]">Hub</span>
-                      </h2>
-                    </div>
-                    <div className="flex justify-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-[#8a7251]/30" />
-                      <span className="w-2 h-2 rounded-full bg-[#8a7251]/60" />
-                      <span className="w-2 h-2 rounded-full bg-[#8a7251]/30" />
-                    </div>
-                    <p className="text-lg text-[#8a7251] font-medium italic">Begin your reading journey</p>
-                    <button
-                      onClick={handleNext}
-                      className="mt-4 px-10 py-4 bg-[#8a7251] text-white rounded-full font-bold uppercase tracking-widest hover:bg-[#6b5846] transition-all shadow-xl hover:shadow-2xl active:scale-95"
+              <div className="flex-1 overflow-y-auto bg-white/10 p-4 md:p-12">
+                <div className="mx-auto flex min-h-full w-full max-w-4xl items-center justify-center">
+                  <div className="reader-paper-stage w-full">
+                    <div className="reader-paper-underlay reader-paper-underlay--rear" aria-hidden />
+                    <div className="reader-paper-underlay reader-paper-underlay--mid" aria-hidden />
+                    <div
+                      key={`reader-paper-${currentPage}-${pageTurnNonce}`}
+                      className={`reader-paper-sheet ${readerPaperAnimationClass} ${
+                        currentPage === 0 ? 'reader-paper-sheet--cover' : ''
+                      }`}
                     >
-                      Start Reading
-                    </button>
-                  </div>
-                ) : (
-                  <div className="w-full max-w-3xl space-y-6 animate-in fade-in slide-in-from-right-4 duration-700">
-                    <>
-                      <div className="flex items-center justify-between border-b border-[#d8cbb8]/30 pb-4 text-[#8a7251]">
-                        <span className="text-xs font-bold uppercase tracking-widest">Page {currentContent?.page_number}</span>
-                        <span className="text-xs font-sans italic opacity-60">Reading: {poem.title}</span>
-                      </div>
+                      <div className="reader-paper-fibers" aria-hidden />
+                      <div className="reader-paper-edge-glow" aria-hidden />
 
-                      {currentContent ? (
-                        currentContent.content === '[PDF_PAGE]' && poem.pdf_file_url ? (
-                          <div className="group relative h-[75vh] min-h-[500px] w-full overflow-hidden rounded-xl border border-[#d8cbb8] bg-white shadow-2xl">
-                            {isPdfLoading && (
-                              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/90 backdrop-blur-sm">
-                                <div className="flex flex-col items-center gap-4">
-                                  <div className="h-10 w-10 animate-spin rounded-full border-4 border-[#8a7251] border-t-transparent" />
-                                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#8a7251]">
-                                    Loading PDF Page {currentContent.page_number}...
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-                            <iframe
-                              ref={iframeRef}
-                              key={`pdf-page-${currentContent.page_number}`}
-                              src={`${poem.pdf_file_url}#page=${currentContent.page_number}&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
-                              onLoad={() => setIsPdfLoading(false)}
-                              className="h-full w-full border-0"
-                              title={`PDF Page ${currentContent.page_number}`}
-                            />
-                            <div className="pointer-events-none absolute inset-0 border-[12px] border-white/5" />
+                      {currentPage === 0 ? (
+                        <div className="flex min-h-[42rem] flex-col items-center justify-center px-8 py-16 text-center md:px-16">
+                          <div className="space-y-4">
+                            <p className="text-xs font-sans uppercase tracking-[0.4em] text-[#8a7251] opacity-60">Welcome to</p>
+                            <h2 className="text-4xl font-extrabold uppercase tracking-tighter leading-none text-[#796349] md:text-6xl">
+                              Poetry
+                              <br />
+                              <span className="text-[#9c8466]">Hub</span>
+                            </h2>
                           </div>
-                        ) : isImageUrl(currentContent.content) ? (
-                          <div className="group relative">
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={currentContent.content}
-                              alt={`${poem.title} page ${currentContent.page_number}`}
-                              className="mx-auto max-h-[70vh] rounded-2xl object-contain shadow-2xl transition-transform duration-500 group-hover:scale-[1.01]"
-                            />
+                          <div className="mt-8 flex justify-center gap-2">
+                            <span className="h-2 w-2 rounded-full bg-[#8a7251]/30" />
+                            <span className="h-2 w-2 rounded-full bg-[#8a7251]/60" />
+                            <span className="h-2 w-2 rounded-full bg-[#8a7251]/30" />
                           </div>
-                        ) : (
-                          <div className="flex min-h-[40vh] items-center justify-center rounded-3xl border border-[#d8cbb8] bg-white/60 p-10 shadow-sm backdrop-blur-md">
-                            <p
-                              className={`text-center font-serif text-2xl font-medium leading-[1.8] whitespace-pre-line md:text-3xl ${pageTheme.text}`}
-                            >
-                              {currentContent.content}
-                            </p>
-                          </div>
-                        )
+                          <p className="mt-8 text-lg font-medium italic text-[#8a7251]">Begin your reading journey</p>
+                          <button
+                            onClick={handleNext}
+                            className="mt-10 rounded-full bg-[#8a7251] px-10 py-4 font-bold uppercase tracking-widest text-white shadow-xl transition-all hover:bg-[#6b5846] hover:shadow-2xl active:scale-95"
+                          >
+                            Start Reading
+                          </button>
+                        </div>
                       ) : (
-                        <div className="rounded-3xl border-2 border-dashed border-[#d8cbb8] bg-white/30 py-20 text-center">
-                          <p className="text-lg italic text-[#8a7251]">No content found for this page.</p>
+                        <div className="reader-paper-body w-full space-y-6 px-6 py-8 md:px-10 md:py-10">
+                          <div className="flex items-center justify-between border-b border-[#d8cbb8]/40 pb-4 text-[#8a7251]">
+                            <span className="text-xs font-bold uppercase tracking-widest">Page {currentContent?.page_number}</span>
+                            <span className="text-xs font-sans italic opacity-60">Reading: {poem.title}</span>
+                          </div>
+
+                          {currentContent ? (
+                            currentContent.content === '[PDF_PAGE]' && poem.pdf_file_url ? (
+                              <div className="group relative h-[75vh] min-h-[500px] w-full overflow-hidden rounded-[2rem] border border-[#d8cbb8] bg-white shadow-2xl">
+                                {isPdfLoading && (
+                                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/90 backdrop-blur-sm">
+                                    <div className="flex flex-col items-center gap-4">
+                                      <div className="h-10 w-10 animate-spin rounded-full border-4 border-[#8a7251] border-t-transparent" />
+                                      <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#8a7251]">
+                                        Loading PDF Page {currentContent.page_number}...
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+                                <iframe
+                                  ref={iframeRef}
+                                  key={`pdf-page-${currentContent.page_number}`}
+                                  src={`${poem.pdf_file_url}#page=${currentContent.page_number}&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
+                                  onLoad={() => setIsPdfLoading(false)}
+                                  className="h-full w-full border-0"
+                                  title={`PDF Page ${currentContent.page_number}`}
+                                />
+                                <div className="pointer-events-none absolute inset-0 border-[12px] border-white/5" />
+                              </div>
+                            ) : isImageUrl(currentContent.content) ? (
+                              <div className="group relative">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={currentContent.content}
+                                  alt={`${poem.title} page ${currentContent.page_number}`}
+                                  className="mx-auto max-h-[70vh] rounded-[2rem] object-contain shadow-2xl transition-transform duration-500 group-hover:scale-[1.01]"
+                                />
+                              </div>
+                            ) : (
+                              <div className="reader-paper-prose">
+                                <p
+                                  className={`text-center font-serif text-2xl font-medium leading-[1.8] whitespace-pre-line md:text-3xl ${pageTheme.text}`}
+                                >
+                                  {currentContent.content}
+                                </p>
+                              </div>
+                            )
+                          ) : (
+                            <div className="rounded-3xl border-2 border-dashed border-[#d8cbb8] bg-white/30 py-20 text-center">
+                              <p className="text-lg italic text-[#8a7251]">No content found for this page.</p>
+                            </div>
+                          )}
                         </div>
                       )}
-                    </>
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             </div>
             )

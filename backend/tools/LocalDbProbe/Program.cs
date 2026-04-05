@@ -1,6 +1,6 @@
 using Microsoft.Data.SqlClient;
 
-var connectionString = "Server=(localdb)\\MSSQLLocalDB;Database=poems_db;Integrated Security=true;Encrypt=False;TrustServerCertificate=True;";
+var connectionString = "Server=(localdb)\\MSSQLLocalDB;Database=poetry_db;Integrated Security=true;Encrypt=False;TrustServerCertificate=True;";
 
 await using var connection = new SqlConnection(connectionString);
 await connection.OpenAsync();

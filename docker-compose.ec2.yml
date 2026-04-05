@@ -45,8 +45,8 @@ services:
       until \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\" >/dev/null 2>&1; do
         sleep 2;
       done;
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"IF DB_ID('poems_db') IS NULL CREATE DATABASE poems_db;\";
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poems_db -C -i /init.sql
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"IF DB_ID('poetry_db') IS NULL CREATE DATABASE poetry_db;\";
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poetry_db -C -i /init.sql
       "
     restart: "no"
 
@@ -60,7 +60,7 @@ services:
       PORT: "5005"
       DB_HOST: db
       DB_PORT: "1433"
-      DB_NAME: ${DB_NAME:-poems_db}
+      DB_NAME: ${DB_NAME:-poetry_db}
       DB_USER: sa
       DB_PASSWORD: ${MSSQL_SA_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in deploy/ec2/.env}

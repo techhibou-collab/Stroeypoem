@@ -35,10 +35,43 @@ services:
       until \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"SELECT 1\" >/dev/null 2>&1; do
         sleep 2;
       done;
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"IF DB_ID('poems_db') IS NULL CREATE DATABASE poems_db;\";
-      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poems_db -C -i /init.sql
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q \"IF DB_ID('poetry_db') IS NULL CREATE DATABASE poetry_db;\";
+      \"$$SQLCMD\" -S db -U sa -P \"$$MSSQL_SA_PASSWORD\" -d poetry_db -C -i /init.sql
       "
     restart: "no"
+
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "5005:5005"
+    environment:
+      PORT: "5005"
+      DB_HOST: db
+      DB_PORT: "1433"
+      DB_NAME: poetry_db
+      DB_USER: sa
+      DB_PASSWORD: "YourStrong!Passw0rd"
+      JWT_SECRET: "change-me-in-production"
+    volumes:
+      - backend_uploads:/app/uploads
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:5005}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
 
 volumes:
   sqlserver_data:

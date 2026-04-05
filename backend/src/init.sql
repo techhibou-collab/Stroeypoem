@@ -35,6 +35,7 @@ BEGIN
         cover_image_url NVARCHAR(MAX) NULL,
         pdf_file_url NVARCHAR(MAX) NULL,
         music_file_url NVARCHAR(MAX) NULL,
+        preview_pdf_url NVARCHAR(MAX) NULL,
         price DECIMAL(10,2) NOT NULL,
         free_pages INT NOT NULL CONSTRAINT DF_poems_free_pages DEFAULT 2,
         created_at DATETIME2 NOT NULL CONSTRAINT DF_poems_created_at DEFAULT SYSUTCDATETIME()
@@ -59,6 +60,11 @@ END;
 IF COL_LENGTH('dbo.poems', 'music_file_url') IS NULL
 BEGIN
     ALTER TABLE dbo.poems ADD music_file_url NVARCHAR(MAX) NULL;
+END;
+
+IF COL_LENGTH('dbo.poems', 'preview_pdf_url') IS NULL
+BEGIN
+    ALTER TABLE dbo.poems ADD preview_pdf_url NVARCHAR(MAX) NULL;
 END;
 
 IF COL_LENGTH('dbo.poems', 'free_pages') IS NULL
