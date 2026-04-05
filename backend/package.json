@@ -4,10 +4,8 @@
   "main": "src/index.ts",
   "scripts": {
     "db:check": "ts-node src/check-db.ts",
-    "build": "tsc",
     "dev": "nodemon --watch src --ext ts,sql,json --exec ts-node src/index.ts",
-    "start": "ts-node src/index.ts",
-    "start:prod": "node dist/index.js"
+    "start": "ts-node src/index.ts"
   },
   "keywords": [],
   "author": "",

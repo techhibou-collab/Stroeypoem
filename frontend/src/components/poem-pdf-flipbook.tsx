@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getApiUrl, type PoemPage } from '@/lib/api';
-import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
 
 const HTMLFlipBook = dynamic(() => import('react-pageflip'), { ssr: false });
 
@@ -32,9 +32,22 @@ type PdfCanvasSlideProps = {
   maxWidth: number;
 };
 
+function isRenderingCancelledError(err: unknown): boolean {
+  if (err === null || err === undefined) {
+    return false;
+  }
+  if (typeof err === 'object' && 'name' in err && (err as { name: string }).name === 'RenderingCancelledException') {
+    return true;
+  }
+  if (err instanceof Error && /cancel|aborted/i.test(err.message)) {
+    return true;
+  }
+  return false;
+}
+
 function PdfCanvasSlide({ pdfDocument, pageNumber, maxWidth }: PdfCanvasSlideProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const renderTaskRef = useRef<ReturnType<PDFPageProxy['render']> | null>(null);
+  const renderTaskRef = useRef<{ cancel: () => void } | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,6 +58,9 @@ function PdfCanvasSlide({ pdfDocument, pageNumber, maxWidth }: PdfCanvasSlidePro
     let cancelled = false;
 
     const run = async () => {
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+
       try {
         setRenderError(null);
         const page = await pdfDocument.getPage(pageNumber);
@@ -68,23 +84,17 @@ function PdfCanvasSlide({ pdfDocument, pageNumber, maxWidth }: PdfCanvasSlidePro
         canvas.width = viewport.width;
         canvas.height = viewport.height;
 
-        renderTaskRef.current?.cancel();
         const task = page.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
-
-        try {
-          await task.promise;
-        } finally {
-          if (renderTaskRef.current === task) {
-            renderTaskRef.current = null;
-          }
+        await task.promise;
+        if (renderTaskRef.current === task) {
+          renderTaskRef.current = null;
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/RenderingCancelledException|cancelled|aborted/i.test(msg) || cancelled) {
+        if (cancelled || isRenderingCancelledError(err)) {
           return;
         }
-        setRenderError(msg || 'Could not render page');
+        setRenderError(err instanceof Error ? err.message : 'Could not render page');
       }
     };
 

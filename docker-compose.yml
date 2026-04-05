@@ -1,9 +1,6 @@
 services:
   db:
-    build:
-      context: ./docker/sqlserver
-      dockerfile: Dockerfile
-    image: stroeypoem-sqlserver:2022
+    image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: poetry_db
     environment:
       ACCEPT_EULA: "Y"
@@ -43,37 +40,5 @@ services:
       "
     restart: "no"
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "5005:5005"
-    environment:
-      PORT: "5005"
-      DB_HOST: db
-      DB_PORT: "1433"
-      DB_NAME: poems_db
-      DB_USER: sa
-      DB_PASSWORD: "YourStrong!Passw0rd"
-      JWT_SECRET: "change-me-in-production"
-    volumes:
-      - backend_uploads:/app/uploads
-    depends_on:
-      db-init:
-        condition: service_completed_successfully
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:5005}
-    ports:
-      - "3000:3000"
-    depends_on:
-      - backend
-
 volumes:
   sqlserver_data:
-  backend_uploads:
