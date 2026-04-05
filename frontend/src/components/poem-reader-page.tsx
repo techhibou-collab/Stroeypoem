@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import PoemPdfFlipbook from '@/components/poem-pdf-flipbook';
 import UserSessionActions from '@/components/user-session-actions';
 import { ApiError, fetchApiJson, type Poem, type PoemPage, type PoemReadResponse } from '@/lib/api';
@@ -22,7 +22,7 @@ const isAssetUrl = (value: string) => /^https?:\/\//i.test(value);
 const isImageUrl = (value: string) =>
   isAssetUrl(value) && /\.(avif|gif|jpe?g|png|svg|webp)(?:$|\?)/i.test(value);
 
-export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProps) {
+function PoemReaderPageContent({ poemId, poemTitle }: PoemReaderPageProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -660,5 +660,19 @@ export default function PoemReaderPage({ poemId, poemTitle }: PoemReaderPageProp
         ) : null}
       </main>
     </div>
+  );
+}
+
+export default function PoemReaderPage(props: PoemReaderPageProps) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[#f7f3ec] font-serif text-[#8a735c]">
+          Loading…
+        </div>
+      }
+    >
+      <PoemReaderPageContent {...props} />
+    </Suspense>
   );
 }

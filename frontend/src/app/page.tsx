@@ -2,6 +2,8 @@ import Link from 'next/link';
 import UserSessionActions from '@/components/user-session-actions';
 import { fetchApiJson, type Poem } from '@/lib/api';
 
+export const dynamic = 'force-dynamic';
+
 const priceFormatter = new Intl.NumberFormat('en-IN', {
   maximumFractionDigits: 2,
 });

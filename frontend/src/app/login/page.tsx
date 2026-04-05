@@ -2,13 +2,13 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { getApiUrl, type UserAuthResponse } from '@/lib/api';
 import { getUserToken, setUserSession } from '@/lib/user-auth';
 
 type AuthMode = 'login' | 'register';
 
-export default function UserLoginPage() {
+function LoginPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectPath = useMemo(() => searchParams.get('redirect') || '/', [searchParams]);
@@ -160,5 +160,19 @@ export default function UserLoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function UserLoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_#fffcf8,_#f7f3ec_70%)] font-serif text-[#8a735c]">
+          Loading…
+        </div>
+      }
+    >
+      <LoginPageContent />
+    </Suspense>
   );
 }

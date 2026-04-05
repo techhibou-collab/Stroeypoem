@@ -1,3 +1,11 @@
+# Single-EC2 stack: SQL Server + backend + frontend (all Docker).
+# DB is NOT published to the host — only reachable on the Docker network.
+#
+# From repo root:
+#   cp deploy/ec2/env.example deploy/ec2/.env
+#   # edit .env (passwords + NEXT_PUBLIC_API_BASE_URL = http://YOUR_EC2_IP:5005)
+#   docker compose --env-file deploy/ec2/.env -f docker-compose.ec2.yml up -d --build
+
 services:
   db:
     build:
@@ -8,18 +16,17 @@ services:
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_PID: "Express"
-      MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
-    ports:
-      - "1434:1433"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Set MSSQL_SA_PASSWORD in deploy/ec2/.env}
     volumes:
       - sqlserver_data:/var/opt/mssql
+    restart: unless-stopped
 
   db-init:
     image: mcr.microsoft.com/mssql-tools
     depends_on:
       - db
     environment:
-      MSSQL_SA_PASSWORD: "YourStrong!Passw0rd"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
     volumes:
       - ./backend/src/init.sql:/init.sql:ro
     entrypoint: /bin/bash
@@ -53,26 +60,28 @@ services:
       PORT: "5005"
       DB_HOST: db
       DB_PORT: "1433"
-      DB_NAME: poems_db
+      DB_NAME: ${DB_NAME:-poems_db}
       DB_USER: sa
-      DB_PASSWORD: "YourStrong!Passw0rd"
-      JWT_SECRET: "change-me-in-production"
+      DB_PASSWORD: ${MSSQL_SA_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in deploy/ec2/.env}
     volumes:
       - backend_uploads:/app/uploads
     depends_on:
       db-init:
         condition: service_completed_successfully
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:5005}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?Set NEXT_PUBLIC_API_BASE_URL in deploy/ec2/.env}
     ports:
       - "3000:3000"
     depends_on:
       - backend
+    restart: unless-stopped
 
 volumes:
   sqlserver_data:
